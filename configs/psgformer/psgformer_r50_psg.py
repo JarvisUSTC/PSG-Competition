@@ -241,4 +241,4 @@ log_config = dict(
     ],
 )
 
-load_from = './work_dirs/checkpoints/detr4psgformer_r50.pth'
+# load_from = './work_dirs/checkpoints/detr4psgformer_r50.pth'
