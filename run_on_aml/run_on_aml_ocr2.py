@@ -61,6 +61,11 @@ def prepare_datasets(args):
         print(cmd)
         os.system(cmd)
 
+    cmd = f"sudo ln -s {args.blob_root}/data/pretrained_models/ {args.working_dir}/checkpoints \n"
+    cmd += f"ls {args.working_dir}/checkpoints \n"
+    print(cmd)
+    sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
+
 
 def unzip_codebase(args):
     codebase_filepath = os.path.join(args.output_path, args.zip_filename)
@@ -223,17 +228,16 @@ def main():
     sp.run(cmd, shell=True, check=True)
 
     args.log_dir = os.path.join(args.working_dir, "temp_log")
+    work_dir = os.path.join(args.working_dir, 'work_dirs')
     cmd = f"sudo mkdir -p {args.log_dir} \n"
     cmd += f"sudo chmod -R 777 {args.log_dir} \n"
+    cmd += f"sudo mkdir -p {work_dir} \n"
+    cmd += f"sudo chmod -R 777 {work_dir} \n"
     print(cmd)
     sp.run(cmd, shell=True, check=True)
 
     args.output_path = os.path.join("/blob", args.output_path)
     cmd = f"sudo ln -s {args.blob_root} /blob \n"
-    print(cmd)
-    sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
-
-    cmd = f"sudo ln -s {args.blob_root}/v-jiaweiwang/data/pretrained_models/ {args.working_dir}/pretrained_backbone \n"
     print(cmd)
     sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
 
