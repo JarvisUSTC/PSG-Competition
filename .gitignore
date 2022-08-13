@@ -4,6 +4,8 @@ work_dirs/
 wandb/
 mmdet/
 submission/
+# run_on_aml/
+zip_codebase/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
