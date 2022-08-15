@@ -209,8 +209,9 @@ optimizer_config = dict(grad_clip=dict(max_norm=0.1, norm_type=2))
 lr_config = dict(policy='step', step=40)
 runner = dict(type='EpochBasedRunner', max_epochs=60)
 
-project_name = 'psgformer'
+project_name = 'psgtr'
 expt_name = 'psgtr_r50_psg_0.5_scale_mask'
+entity = 'psgyyds'
 work_dir = f'./work_dirs/{expt_name}'
 checkpoint_config = dict(interval=2, max_keep_ckpts=10)
 
@@ -224,10 +225,11 @@ log_config = dict(
             init_kwargs=dict(
                 project=project_name,
                 name=expt_name,
+                entity=entity,
                 # config=work_dir + "/cfg.yaml"
             ),
         )
     ],
 )
 
-load_from = 'work_dirs/checkpoints/detr_pan_r50.pth'
+load_from = 'checkpoints/detr_pan_r50.pth'
