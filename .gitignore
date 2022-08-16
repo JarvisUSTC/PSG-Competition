@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 data
 data_val
 work_dirs/
@@ -7,6 +8,8 @@ submission/
 # run_on_aml/
 zip_codebase/
 
+=======
+>>>>>>> main
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -136,6 +139,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+<<<<<<< HEAD
 
 #
 *.ipynb
@@ -150,3 +154,5 @@ dmypy.json
 tools/custom_tools
 scripts/_depreciated
 # configs/detseg
+=======
+>>>>>>> main
