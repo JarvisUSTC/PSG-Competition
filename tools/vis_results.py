@@ -83,7 +83,7 @@ def main():
     dataset = build_dataset(cfg.data.test)
     outputs = mmcv.load(args.prediction_path)
 
-    for idx in args.img_idx:
+    for idx in range(0, 100):
         print(idx, flush=True)
         img = dataset[idx]['img_metas'][0].data['filename']
         result = outputs[idx]
@@ -92,6 +92,7 @@ def main():
                     result,
                     is_one_stage=args.one_stage,
                     num_rel=args.topk,
+                    out_dir = osp.join(args.show_dir, f'{idx}/'),
                     out_file=out_filepath)
 
 
