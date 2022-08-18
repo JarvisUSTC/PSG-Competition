@@ -1,13 +1,15 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import argparse
 import os.path as osp
+from pathlib import Path
 
 import mmcv
 from mmcv import Config, DictAction
 from mmdet.datasets import build_dataset, replace_ImageToTensor
+from openpsg.utils.vis_tools.preprocess import load_json
 
 from openpsg.utils.utils import show_result
-
+from openpsg.utils.utils_xiaowen import show_result_xiaowen
 
 
 def parse_args():
@@ -20,7 +22,7 @@ def parse_args():
                         help='directory where painted images will be saved')
     parser.add_argument('--show', action='store_true', help='show results')
     parser.add_argument('--img_idx',
-                        default=[25, 73],
+                        default=[0,1],
                         nargs='+',
                         type=int,
                         help='which image to show')
@@ -80,18 +82,34 @@ def main():
                 ds_cfg.pipeline = replace_ImageToTensor(ds_cfg.pipeline)
 
     # build the dataloader
+    #print(cfg.data.test)
     dataset = build_dataset(cfg.data.test)
+    #print(dataset)
     outputs = mmcv.load(args.prediction_path)
+    psg_dataset_file = load_json(Path(cfg.data.test.ann_file))
+    test_jsons = {}
+    for js in psg_dataset_file['data']:
+        if js['image_id'] in psg_dataset_file['test_image_ids']:
+            test_jsons[js['file_name'].split(".jpg")[0].split("/")[-1]] = js
 
     for idx in args.img_idx:
         print(idx, flush=True)
         img = dataset[idx]['img_metas'][0].data['filename']
+        data_ = test_jsons[img.split(".jpg")[0].split("/")[-1]]
+        #print(data_)
+        #print(dataset[idx]['img_metas'][0])
+        seg_info = data_['segments_info']
+        seg_map = cfg.data.test.seg_prefix + data_['pan_seg_file_name']
+        rels = data_['relations']
         result = outputs[idx]
         out_filepath = osp.join(args.show_dir, f'{idx}.png')
-        show_result(img,
+        show_result_xiaowen(img,
                     result,
+                    seg_info,
+                    seg_map,
+                    rels,
                     is_one_stage=args.one_stage,
-                    num_rel=args.topk,
+                    num_topk=args.topk,
                     out_file=out_filepath)
 
 
