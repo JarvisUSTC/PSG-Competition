@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Panoptic Scene Graph Generation
 <!-- <br /> -->
 <!-- <p align="center">
@@ -256,7 +255,3 @@ If you find our repository useful for your research, please consider citing our 
     year = {2022}
 }
 ```
-=======
-# PSG-Competition
-2022-粤港澳大湾区国际算法算例大赛-PSG Track
->>>>>>> main

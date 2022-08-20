@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 data
 data_val
 work_dirs/
@@ -8,8 +7,6 @@ submission/
 # run_on_aml/
 zip_codebase/
 
-=======
->>>>>>> main
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
