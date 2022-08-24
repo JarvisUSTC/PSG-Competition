@@ -370,7 +370,7 @@ def show_result_xiaowen(img,
 
     #use torch to get topk prediction results, NOTE that only predicate score is considered
     scores_pt = torch.from_numpy(_[:,1]) #only predicate scores
-    topk_values, topk_indices = scores_pt.topk(num_topk, sorted=True)
+    topk_values, topk_indices = scores_pt.topk(min(num_topk,len(scores_pt)), sorted=True)
     pred_triplets = pred_triplets[topk_indices]
     pred_triplet_det_results = pred_triplet_det_results[topk_indices]
     pred_triplets = pred_triplets - 1 # remove background class

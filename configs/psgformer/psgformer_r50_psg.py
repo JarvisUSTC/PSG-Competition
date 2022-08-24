@@ -201,7 +201,7 @@ data = dict(samples_per_gpu=1,
 # optimizer
 optimizer = dict(
     type='AdamW',
-    lr=0.001,
+    lr=0.0001,
     weight_decay=0.0001,
     paramwise_cfg=dict(
         custom_keys={
@@ -224,6 +224,7 @@ runner = dict(type='EpochBasedRunner', max_epochs=60)
 
 project_name = 'psgformer'
 expt_name = 'psgformer_r50_psg'
+entity = 'psgyyds'
 work_dir = f'./work_dirs/{expt_name}'
 checkpoint_config = dict(interval=1, max_keep_ckpts=15)
 
@@ -236,6 +237,7 @@ log_config = dict(
             init_kwargs=dict(
                 project=project_name,
                 name=expt_name,
+                entity=entity
             ),
         )
     ],

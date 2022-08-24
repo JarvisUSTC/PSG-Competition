@@ -92,14 +92,15 @@ def main():
         if js['image_id'] in psg_dataset_file['test_image_ids']:
             test_jsons[js['file_name'].split(".jpg")[0].split("/")[-1]] = js
 
-    for idx in args.img_idx:
+    # for idx in args.img_idx:
+    for idx in range(400, 1000):
         print(idx, flush=True)
         img = dataset[idx]['img_metas'][0].data['filename']
         data_ = test_jsons[img.split(".jpg")[0].split("/")[-1]]
         #print(data_)
         #print(dataset[idx]['img_metas'][0])
         seg_info = data_['segments_info']
-        seg_map = cfg.data.test.seg_prefix + data_['pan_seg_file_name']
+        seg_map = osp.join(cfg.data.test.seg_prefix,data_['pan_seg_file_name'])
         rels = data_['relations']
         result = outputs[idx]
         out_filepath = osp.join(args.show_dir, f'{idx}.png')
