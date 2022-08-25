@@ -400,7 +400,10 @@ def show_result(img,
         )
         output_viz_graph = np.vstack([viz_masked_img, viz_graph.get_image()])
         if out_file is not None:
-            mmcv.imwrite(output_viz_graph, osp.join(out_dir, '{}.jpg'.format(i)))
+            if out_dir is not None:
+                mmcv.imwrite(output_viz_graph, osp.join(out_dir, '{}.jpg'.format(i)))
+            else:
+                mmcv.imwrite(output_viz_graph, out_file)
 
     # if out_file is not None:
     #     mmcv.imwrite(output_viz_graph, out_file)
