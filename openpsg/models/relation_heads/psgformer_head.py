@@ -978,7 +978,7 @@ class PSGFormerHead(AnchorFreeHead):
             if all_labels.numel() == 0:
                 pan_img = torch.ones(mask_size).cpu().to(torch.long)
                 pan_masks = pan_img.unsqueeze(0).cpu().to(torch.long)
-                pan_rel_pairs = torch.arange(len(labels), dtype=torch.int).to(masks.device).reshape(2, -1).T
+                pan_rel_pairs = torch.arange(len(labels), dtype=torch.int).to(pan_masks.device).reshape(2, -1).T
                 rels = torch.tensor([0,0,0]).view(-1,3)
                 pan_labels = torch.tensor([0])
             else:
