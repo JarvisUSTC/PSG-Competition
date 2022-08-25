@@ -92,8 +92,7 @@ def main():
         if js['image_id'] in psg_dataset_file['test_image_ids']:
             test_jsons[js['file_name'].split(".jpg")[0].split("/")[-1]] = js
 
-    # for idx in args.img_idx:
-    for idx in range(400, 1000):
+    for idx in range(0, 100):
         print(idx, flush=True)
         img = dataset[idx]['img_metas'][0].data['filename']
         data_ = test_jsons[img.split(".jpg")[0].split("/")[-1]]
@@ -110,7 +109,8 @@ def main():
                     seg_map,
                     rels,
                     is_one_stage=args.one_stage,
-                    num_topk=args.topk,
+                    num_rel=args.topk,
+                    out_dir = osp.join(args.show_dir, f'{idx}/'),
                     out_file=out_filepath)
 
 
