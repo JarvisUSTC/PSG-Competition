@@ -18,6 +18,11 @@ def parse_args():
         required=True,
     )
     parser.add_argument(
+        "--dataset_unzip",
+        help="whether using prepare_dataset_compressed",
+        action='store_true',
+    )
+    parser.add_argument(
         "--blob_root", help="path to blob root", type=str, required=True,
     )
     parser.add_argument(
@@ -66,6 +71,26 @@ def prepare_datasets(args):
     print(cmd)
     sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
 
+def prepare_datasets_compressed(args):
+    dataset_path = os.path.join(args.working_dir, "data")
+    dataset_names = args.dataset_names.split(",")
+    for dataset_name in dataset_names:
+        # if dataset_name == 'OpenPSG':
+        #     dataset_path_tmp = os.path.join(dataset_path, "psg")
+        # else:
+        #     dataset_path_tmp = os.path.join(dataset_path, dataset_name)
+        dataset_blob_path = f"{args.blob_root}/data/{dataset_name}.zip"
+        cmd = f"unzip {dataset_blob_path} -d {dataset_path} >/dev/null\n"
+        print(cmd)
+        os.system(cmd)
+        cmd = f"ls {dataset_path}"
+        print(cmd)
+        os.system(cmd)
+    
+    cmd = f"sudo ln -s {args.blob_root}/data/pretrained_models/ {args.working_dir}/checkpoints \n"
+    cmd += f"ls {args.working_dir}/checkpoints \n"
+    print(cmd)
+    sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
 
 def unzip_codebase(args):
     codebase_filepath = os.path.join(args.output_path, args.zip_filename)
@@ -209,7 +234,10 @@ def barrier(args, machine_rank, num_machines, dist_url):
     unzip_codebase(args)
 
     build_repo(args)
-    prepare_datasets(args)
+    if args.dataset_unzip:
+        prepare_datasets_compressed(args)
+    else:
+        prepare_datasets(args)
 
     cmd = "export GLOO_SOCKET_IFNAME=eth0\n"
     cmd += f"python run_on_aml/barrier.py --dist-url {dist_url} --machine-rank {machine_rank} --num-machines {num_machines}"
@@ -292,7 +320,10 @@ def main():
         install_conda_and_create_new_env(args)
 
         build_repo(args)
-        prepare_datasets(args)
+        if args.dataset_unzip:
+            prepare_datasets_compressed(args)
+        else:
+            prepare_datasets(args)
 
         cmd = f"sudo chmod -R 777 ./ \n" # prevent permission denied
         print(cmd)

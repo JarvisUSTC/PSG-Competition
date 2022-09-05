@@ -81,11 +81,11 @@ def check_config_and_upload_codes(args):
 
     config_file = args.config_file
     output_path = os.path.splitext(config_file)[0].replace("configs/", "")
-    zip_filename = f"PSG@{output_path.replace('/', '_')}@{args.target}.zip" # @{time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())}.zip"
+    zip_filename = f"PSG@{output_path.replace('/', '_')}@{args.target}@{time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())}.zip" # @{time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())}.zip"
     zip_dirname = "zip_codebase"
     zip_filepath = f"{zip_dirname}/{zip_filename}"
     cmd = f"mkdir -p {zip_dirname} \n"
-    cmd += f'zip -ry {zip_filepath} . -x "run_on_aml/*" -x "zip_codebase/*" -x "work_dirs/*" -x "data/*" -x "wandb/*" -x "submission/*" -x "openpsg.egg-info/*" >/dev/null \n'
+    cmd += f'zip -ry {zip_filepath} . -x "run_on_aml/*" -x "zip_codebase/*" -x "work_dirs/*" -x "data/*" -x "wandb/*" -x "submission/*" -x "openpsg.egg-info/*" -x "checkpoints/*" >/dev/null \n'
     print(cmd)
     sp.run(cmd, shell=True, check=True)
     output_dir = os.path.join(args.blob_output_root, output_path)
@@ -117,6 +117,11 @@ def main():
         help="used dataset names, split with ','",
         type=str,
         required=False,
+    )
+    parser.add_argument(
+        "--dataset_unzip",
+        help="whether using prepare_dataset_compressed",
+        action='store_true',
     )
     parser.add_argument(
         "--sleep_for_debug",
@@ -156,20 +161,37 @@ def main():
         else:
             entry_script = "run_on_aml.py"
         zip_filename, output_path = check_config_and_upload_codes(args,)
-        script_params = [
-            "--config_file",
-            args.config_file,
-            "--blob_root",
-            str(ds_ref),
-            "--dataset_names",
-            args.dataset_names,
-            "--zip_filename",
-            zip_filename,
-            "--output_path",
-            output_path,
-            "--working_dir",
-            args.experiment_name,
-        ]
+        if args.dataset_unzip:
+            script_params = [
+                "--config_file",
+                args.config_file,
+                "--blob_root",
+                str(ds_ref),
+                "--dataset_names",
+                args.dataset_names,
+                "--dataset_unzip",
+                "--zip_filename",
+                zip_filename,
+                "--output_path",
+                output_path,
+                "--working_dir",
+                args.experiment_name,
+            ]
+        else:
+            script_params = [
+                "--config_file",
+                args.config_file,
+                "--blob_root",
+                str(ds_ref),
+                "--dataset_names",
+                args.dataset_names,
+                "--zip_filename",
+                zip_filename,
+                "--output_path",
+                output_path,
+                "--working_dir",
+                args.experiment_name,
+            ]
         if unparsed != "":
 
             script_params["--unparsed"] = unparsed

@@ -3,6 +3,7 @@ import os
 import torch
 import subprocess as sp
 import time
+import re
 
 
 def parse_args():
@@ -15,6 +16,11 @@ def parse_args():
         help="used dataset names, split with ','",
         type=str,
         required=True,
+    )
+    parser.add_argument(
+        "--dataset_unzip",
+        help="whether using prepare_dataset_compressed",
+        action='store_true',
     )
     parser.add_argument(
         "--blob_root", help="path to blob root", type=str, required=True,
@@ -37,30 +43,54 @@ def parse_args():
 
 
 def build_repo(args):
-
-    cmd = f"pip install -r {args.working_dir}/requirements.txt"
+    cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
+    cmd += f"pip install -r {args.working_dir}/requirements.txt"
     print(cmd)
     os.system(cmd)
 
-    sh_path = os.path.join(args.working_dir, "models", "ops")
-
-    cmd = f"sudo sh make.sh"
+    cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
+    cmd += f"cd {args.working_dir} \n"
+    cmd += "pip install -v -e . \n"
     print(cmd)
-    sp.run(cmd, shell=True, cwd=sh_path, check=True)
+    os.system(cmd)
 
 
 def prepare_datasets(args):
     dataset_path = os.path.join(args.working_dir, "data")
     dataset_names = args.dataset_names.split(",")
-    azcopy_dataset_names = ["ADEChallengeData2016", "coco", "cityscapes"]
     for dataset_name in dataset_names:
-        cmd = f"ln -s {args.blob_root}/data/{dataset_name} {dataset_path}/"
+        cmd = f"ln -s {args.blob_root}/data/{dataset_name} {dataset_path}"
         print(cmd)
         os.system(cmd)
         cmd = f"ls {dataset_path}"
         print(cmd)
         os.system(cmd)
 
+    cmd = f"sudo ln -s {args.blob_root}/data/pretrained_models/ {args.working_dir}/checkpoints \n"
+    cmd += f"ls {args.working_dir}/checkpoints \n"
+    print(cmd)
+    sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
+
+def prepare_datasets_compressed(args):
+    dataset_path = os.path.join(args.working_dir, "data")
+    dataset_names = args.dataset_names.split(",")
+    for dataset_name in dataset_names:
+        # if dataset_name == 'OpenPSG':
+        #     dataset_path_tmp = os.path.join(dataset_path, "psg")
+        # else:
+        #     dataset_path_tmp = os.path.join(dataset_path, dataset_name)
+        dataset_blob_path = f"{args.blob_root}/data/{dataset_name}.zip"
+        cmd = f"unzip {dataset_blob_path} -d {dataset_path} >/dev/null\n"
+        print(cmd)
+        os.system(cmd)
+        cmd = f"ls {dataset_path}"
+        print(cmd)
+        os.system(cmd)
+    
+    cmd = f"sudo ln -s {args.blob_root}/data/pretrained_models/ {args.working_dir}/checkpoints \n"
+    cmd += f"ls {args.working_dir}/checkpoints \n"
+    print(cmd)
+    sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
 
 def unzip_codebase(args):
     codebase_filepath = os.path.join(args.output_path, args.zip_filename)
@@ -124,42 +154,64 @@ def install_apps():
     print(cmd)
     os.system(cmd)
 
-    cmd = "pip install torch==1.10.1 torchvision==0.11.2 >/dev/null"
+def install_conda_and_create_new_env(args):
+    args.conda_prefix = "$HOME/miniconda"
+    INSTALLER_PATH = "$HOME/Miniconda3-latest-Linux-x86_64.sh"
+    args.new_env_name = "openpsg"
+    # find cuda version
+    cmds = ['nvcc', '-V']
+    proc = sp.Popen(cmds, stdout=sp.PIPE, stderr=sp.PIPE)
+    stdout, stderr = proc.communicate()
+    output = stdout.decode('utf-8').split('\n')[-2]
+    CUDA_VERSION = re.findall(r'\d+\.\d+', output)[-1]
+    print(CUDA_VERSION)
+
+    # install conda
+    cmd = f"wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O {INSTALLER_PATH} >/dev/null \n"
+    cmd += f"bash {INSTALLER_PATH} -b -p {args.conda_prefix} -f >/dev/null \n"
+    print(cmd)
+    sp.run(cmd, shell=True, check=True)
+
+    # create new env
+    cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
+    cmd += f"conda env create -f {args.working_dir}/environment.yml \n"
+    print(cmd)
+    sp.run(cmd, shell=True, check=True)
+
+    cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
+    cmd += "pip install mmcv-full==1.4.3 -f https://download.openmmlab.com/mmcv/dist/cu102/torch1.7.0/index.html"
     print(cmd)
     os.system(cmd)
 
-    cmd = "python -m pip install detectron2 -f \
-  https://dl.fbaipublicfiles.com/detectron2/wheels/cu102/torch1.10/index.html"
+    cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
+    cmd += "pip install openmim"
     print(cmd)
     os.system(cmd)
 
-    cmd = "pip install opencv-python einops >/dev/null"
+    cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
+    cmd += "pip install mmdet==2.20.0"
     print(cmd)
     os.system(cmd)
 
-    cmd = "pip install git+https://github.com/cocodataset/panopticapi.git"
+    cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
+    cmd += "pip install git+https://github.com/cocodataset/panopticapi.git"
     print(cmd)
     os.system(cmd)
 
-    cmd = "pip install git+https://github.com/mcordts/cityscapesScripts.git"
+    cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
+    cmd += "conda install -c conda-forge pycocotools \n"
+    cmd += "pip install detectron2==0.5 -f \
+  https://dl.fbaipublicfiles.com/detectron2/wheels/cu102/torch1.7/index.html"
     print(cmd)
     os.system(cmd)
 
-    cmd = "pip install mmcv-full -f https://download.openmmlab.com/mmcv/dist/cu102/torch1.10.0/index.html"
+    cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
+    cmd += "pip install wandb \n"
+    cmd += "wandb login d8d48d5c16ca9b51769d812605aed1929aca30e1\n"
     print(cmd)
     os.system(cmd)
 
-    cmd = "pip install openmim"
-    print(cmd)
-    os.system(cmd)
 
-    cmd = "mim install mmdet"
-    print(cmd)
-    os.system(cmd)
-
-    cmd = "pip install timm"
-    print(cmd)
-    os.system(cmd)
 
 
 def barrier(args, machine_rank, num_machines, dist_url):
@@ -182,7 +234,10 @@ def barrier(args, machine_rank, num_machines, dist_url):
     unzip_codebase(args)
 
     build_repo(args)
-    prepare_datasets(args)
+    if args.dataset_unzip:
+        prepare_datasets_compressed(args)
+    else:
+        prepare_datasets(args)
 
     cmd = "export GLOO_SOCKET_IFNAME=eth0\n"
     cmd += f"python run_on_aml/barrier.py --dist-url {dist_url} --machine-rank {machine_rank} --num-machines {num_machines}"
@@ -192,17 +247,20 @@ def barrier(args, machine_rank, num_machines, dist_url):
 
 
 def main():
-    # install_apps()
+    install_apps()
     args, extra_args = parse_args()
-    args.working_dir = "/mnt"
+    args.working_dir = "/OpenPSG"
     cmd = f"sudo mkdir -p {args.working_dir} \n"
     cmd += f"sudo chmod -R 777 {args.working_dir} \n"
     print(cmd)
     sp.run(cmd, shell=True, check=True)
 
     args.log_dir = os.path.join(args.working_dir, "temp_log")
+    work_dir = os.path.join(args.working_dir, 'work_dirs')
     cmd = f"sudo mkdir -p {args.log_dir} \n"
     cmd += f"sudo chmod -R 777 {args.log_dir} \n"
+    cmd += f"sudo mkdir -p {work_dir} \n"
+    cmd += f"sudo chmod -R 777 {work_dir} \n"
     print(cmd)
     sp.run(cmd, shell=True, check=True)
 
@@ -211,15 +269,11 @@ def main():
     print(cmd)
     sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
 
-    cmd = f"sudo ln -s {args.blob_root}/v-jiaweiwang/data/pretrained_models/ {args.working_dir}/pretrained_backbone \n"
-    print(cmd)
-    sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
-
     num_machines = int(os.getenv("OMPI_COMM_WORLD_SIZE", default="1"))
     machine_rank = int(os.getenv("OMPI_COMM_WORLD_RANK", default="0"))
-    cmd = "env | grep NODE\n env | grep OMPI \n env | grep MASTER\n"
-    print(cmd)
-    sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
+    # cmd = "env | grep NODE\n env | grep OMPI \n env | grep MASTER\n"
+    # print(cmd)
+    # sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
     print(f"num_machines={num_machines}, machine_rank={machine_rank}")
     gpus = torch.cuda.device_count()
 
@@ -261,11 +315,15 @@ def main():
         os.environ["LANG"] = "C.UTF-8"
         os.environ["LC_ALL"] = "C.UTF-8"
         os.environ["OPENBLAS_NUM_THREADS"] = "12"
-        install_apps()
+        # install_apps()
         unzip_codebase(args)
+        install_conda_and_create_new_env(args)
 
         build_repo(args)
-        prepare_datasets(args)
+        if args.dataset_unzip:
+            prepare_datasets_compressed(args)
+        else:
+            prepare_datasets(args)
 
         cmd = f"sudo chmod -R 777 ./ \n" # prevent permission denied
         print(cmd)
@@ -277,18 +335,18 @@ def main():
             f"--output_dir {args.output_path} "
             f"--resume {args.output_path}/checkpoint.pth 2>&1 |tee {args.output_path}/azure_log.txt"
         )"""
-        # cmd = (
-        #     f"GPUS_PER_NODE=8 ./tools/run_dist_launch.sh 8  "
-        #     f"{args.config_file} "
-        #     f"--output_dir {args.output_path} 2>&1 |tee {args.output_path}/azure_log.txt"
-        # )
         dataset_names = args.dataset_names.split(",")
-        cmd = (
-            f"GPUS_PER_NODE=8 ./tools/run_dist_launch.sh 8  "
+
+        cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
+        cmd += (
+            f"python -m torch.distributed.launch "
+            f"--nproc_per_node=8 --master_port=29500 "
+            f"tools/train.py "
             f"{args.config_file} "
-            f"--coco_path data/{dataset_names[0]} "
-            f"--resume {args.output_path}/checkpoint.pth "
-            f"--output_dir {args.output_path} 2>&1 |tee {args.output_path}/azure_log.txt"
+            f"--gpus 8 "
+            f"--launcher pytorch "
+            # f"--resume_from {args.output_path}/checkpoint.pth "
+            f"--work-dir {args.output_path} 2>&1 |tee {args.output_path}/azure_log.txt"
         )
         print(cmd)
         sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
