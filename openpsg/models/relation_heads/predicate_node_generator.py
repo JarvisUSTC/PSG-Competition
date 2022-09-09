@@ -112,7 +112,7 @@ class Predicate_Node_Generator(BaseModule):
 
         self.rel_entity_cross_decoder_norm = nn.LayerNorm(self.embed_dims)
 
-        self.update_query_by_rel_hs = True # It should be updated
+        self.update_query_by_rel_hs = False # It should be updated
         self.ent_dec_each_lvl = True # From ori SGTR
 
         self.ent_rel_fuse_fc_obj = nn.Sequential(nn.Linear(self.embed_dims, self.embed_dims))

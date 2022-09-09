@@ -1448,18 +1448,18 @@ class SGTRHead(AnchorFreeHead):
             dtype=torch.long)  ### 0-based, class [num_classes]  as background
         s_labels[pos_inds] = gt_sub_labels[
             s_sampling_result.pos_assigned_gt_inds]
-        s_label_weights = gt_sub_bboxes.new_ones(num_rels)
-        # s_label_weights = gt_sub_bboxes.new_zeros(num_rels)
-        # s_label_weights[pos_inds] = 1.0
+        # s_label_weights = gt_sub_bboxes.new_ones(num_rels)
+        s_label_weights = gt_sub_bboxes.new_zeros(num_rels)
+        s_label_weights[pos_inds] = 1.0
 
         o_labels = gt_obj_bboxes.new_full(
             (num_rels, ), self.num_classes,
             dtype=torch.long)  ### 0-based, class [num_classes] as background
         o_labels[pos_inds] = gt_obj_labels[
             o_sampling_result.pos_assigned_gt_inds]
-        o_label_weights = gt_sub_bboxes.new_ones(num_rels)
-        # o_label_weights = gt_obj_bboxes.new_zeros(num_rels)
-        # o_label_weights[pos_inds] = 1.0
+        # o_label_weights = gt_sub_bboxes.new_ones(num_rels)
+        o_label_weights = gt_obj_bboxes.new_zeros(num_rels)
+        o_label_weights[pos_inds] = 1.0
 
         r_labels = gt_obj_bboxes.new_full((num_rels, ), 0,
                                           dtype=torch.long)  ### 1-based
