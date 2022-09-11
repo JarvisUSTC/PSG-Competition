@@ -73,6 +73,7 @@ class Predicate_Node_Generator(BaseModule):
         rel_q_gen_decoder = None,
         entities_aware_decoder = None,
         num_rel_query = 100,
+        entities_enhance_decoder = None,
         init_cfg = None,
     ):
         super(Predicate_Node_Generator, self).__init__(init_cfg=init_cfg)
@@ -102,6 +103,13 @@ class Predicate_Node_Generator(BaseModule):
 
         # Entity aware decoder
         self.entities_aware_decoder = build_transformer_layer_sequence(entities_aware_decoder)
+        if entities_enhance_decoder is not None:
+            self.entities_enhance_decoder = build_transformer_layer_sequence(entities_enhance_decoder)
+            self.rel_entity_enhance_decoder_layers_obj = copy.deepcopy(self.entities_enhance_decoder.layers)
+            self.rel_entity_enhance_decoder_layers_sub = copy.deepcopy(self.entities_enhance_decoder.layers)
+        else:
+            self.entities_enhance_decoder = None
+
         self.ent_pred_fuse_layernorm = nn.LayerNorm(self.embed_dims)
 
         self.rel_query_embed_sub = nn.Embedding(self.num_rel_queries, self.embed_dims)
@@ -220,7 +228,7 @@ class Predicate_Node_Generator(BaseModule):
                 # entity indicator sub-decoder
                 ent_sub_dec_outputs = self.entities_sub_decoder(
                     ent_hs_input, query_embed_obj_init, query_embed_sub_init,
-                    ent_obj_tgt, ent_sub_tgt, start, idx, rel_hs_out,
+                    ent_obj_tgt, ent_sub_tgt, start, idx, rel_hs_out, shared_encoder_memory, src_pos_embed, mask_flatten
                 )
                 ent_obj_tgt = ent_sub_dec_outputs['obj_ent_hs']
                 ent_sub_tgt = ent_sub_dec_outputs['sub_ent_hs']
@@ -401,6 +409,9 @@ class Predicate_Node_Generator(BaseModule):
             start,
             idx,
             rel_hs_out,
+            enc_memory,
+            src_pos_embed, 
+            mask_flatten
     ):
         rel_hs_out_obj_hs = []
         rel_hs_out_sub_hs = []
@@ -417,42 +428,108 @@ class Predicate_Node_Generator(BaseModule):
             _sub_ent_dec_layers = [self.rel_entity_cross_decoder_layers_sub[idx - start]]
             _obj_ent_dec_layers = [self.rel_entity_cross_decoder_layers_obj[idx - start]]
 
-        for layeri, (ent_dec_layer_sub, ent_dec_layer_obj) in enumerate(zip(
-                _sub_ent_dec_layers, _obj_ent_dec_layers,
-        )):
-            # seq_len, bs, dim = rel_hs_out.shape
-            # self.debug_print('ent_dec_layers id' + str(layeri))
+        if self.entities_enhance_decoder is not None:
+            enhance_sub_ent_dec_layers = [self.rel_entity_enhance_decoder_layers_sub[idx - start]]
+            enhance_obj_ent_dec_layers = [self.rel_entity_enhance_decoder_layers_obj[idx - start]]
+            bs, c, h, w = enc_memory.shape
+            enc_memory = enc_memory.flatten(2).permute(2, 0, 1)
 
-            ent_sub_output_dict = ent_dec_layer_sub(
-                ent_sub_tgt,
-                ent_hs_input,
-                ent_hs_input,
-                key_padding_mask=None,
-                key_pos=None,
-                query_pos=query_pos_embed_sub,
-            )
+            for layeri, (ent_dec_layer_sub, ent_dec_layer_obj, enhance_ent_dec_layer_sub, enhance_ent_dec_layer_obj,) in enumerate(zip(
+                    _sub_ent_dec_layers, _obj_ent_dec_layers, enhance_sub_ent_dec_layers, enhance_obj_ent_dec_layers
+            )):
+                # seq_len, bs, dim = rel_hs_out.shape
+                # self.debug_print('ent_dec_layers id' + str(layeri))
 
-            ent_obj_output_dict = ent_dec_layer_obj(
-                ent_obj_tgt,
-                ent_hs_input,
-                ent_hs_input,
-                key_padding_mask=None,
-                key_pos=None,
-                query_pos=query_pos_embed_obj,
-            )
+                ent_sub_output_dict = ent_dec_layer_sub(
+                    ent_sub_tgt,
+                    ent_hs_input,
+                    ent_hs_input,
+                    key_padding_mask=None,
+                    key_pos=None,
+                    query_pos=query_pos_embed_sub,
+                )
 
-            ent_obj_tgt = ent_obj_output_dict
-            ent_sub_tgt = ent_sub_output_dict
+                ent_obj_output_dict = ent_dec_layer_obj(
+                    ent_obj_tgt,
+                    ent_hs_input,
+                    ent_hs_input,
+                    key_padding_mask=None,
+                    key_pos=None,
+                    query_pos=query_pos_embed_obj,
+                )
 
-            if self.entities_aware_decoder.post_norm is None:
-                rel_hs_sub = self.rel_entity_cross_decoder_norm(ent_sub_tgt)
-                rel_hs_obj = self.rel_entity_cross_decoder_norm(ent_obj_tgt)
-            else:
-                rel_hs_sub = ent_sub_tgt
-                rel_hs_obj = ent_obj_tgt
+                ent_obj_tgt = ent_obj_output_dict
+                ent_sub_tgt = ent_sub_output_dict
 
-            rel_hs_out_obj_hs.append(rel_hs_obj)
-            rel_hs_out_sub_hs.append(rel_hs_sub)
+                ent_sub_output_dict = enhance_ent_dec_layer_sub(
+                    ent_sub_tgt,
+                    enc_memory,
+                    enc_memory,
+                    key_padding_mask=mask_flatten,
+                    key_pos=src_pos_embed,
+                    query_pos=query_pos_embed_sub,
+                )
+
+                ent_obj_output_dict = enhance_ent_dec_layer_obj(
+                    ent_obj_tgt,
+                    enc_memory,
+                    enc_memory,
+                    key_padding_mask=mask_flatten,
+                    key_pos=src_pos_embed,
+                    query_pos=query_pos_embed_obj,
+                )
+
+                ent_obj_tgt = ent_obj_output_dict
+                ent_sub_tgt = ent_sub_output_dict
+
+                if self.entities_aware_decoder.post_norm is None:
+                    rel_hs_sub = self.rel_entity_cross_decoder_norm(ent_sub_tgt)
+                    rel_hs_obj = self.rel_entity_cross_decoder_norm(ent_obj_tgt)
+                else:
+                    rel_hs_sub = ent_sub_tgt
+                    rel_hs_obj = ent_obj_tgt
+
+                rel_hs_out_obj_hs.append(rel_hs_obj)
+                rel_hs_out_sub_hs.append(rel_hs_sub)
+        
+        else:
+
+            for layeri, (ent_dec_layer_sub, ent_dec_layer_obj) in enumerate(zip(
+                    _sub_ent_dec_layers, _obj_ent_dec_layers,
+            )):
+                # seq_len, bs, dim = rel_hs_out.shape
+                # self.debug_print('ent_dec_layers id' + str(layeri))
+
+                ent_sub_output_dict = ent_dec_layer_sub(
+                    ent_sub_tgt,
+                    ent_hs_input,
+                    ent_hs_input,
+                    key_padding_mask=None,
+                    key_pos=None,
+                    query_pos=query_pos_embed_sub,
+                )
+
+                ent_obj_output_dict = ent_dec_layer_obj(
+                    ent_obj_tgt,
+                    ent_hs_input,
+                    ent_hs_input,
+                    key_padding_mask=None,
+                    key_pos=None,
+                    query_pos=query_pos_embed_obj,
+                )
+
+                ent_obj_tgt = ent_obj_output_dict
+                ent_sub_tgt = ent_sub_output_dict
+
+                if self.entities_aware_decoder.post_norm is None:
+                    rel_hs_sub = self.rel_entity_cross_decoder_norm(ent_sub_tgt)
+                    rel_hs_obj = self.rel_entity_cross_decoder_norm(ent_obj_tgt)
+                else:
+                    rel_hs_sub = ent_sub_tgt
+                    rel_hs_obj = ent_obj_tgt
+
+                rel_hs_out_obj_hs.append(rel_hs_obj)
+                rel_hs_out_sub_hs.append(rel_hs_sub)
 
         ent_sub_tgt = rel_hs_out_sub_hs[-1]
         ent_obj_tgt = rel_hs_out_obj_hs[-1]
