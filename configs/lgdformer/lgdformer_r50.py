@@ -155,4 +155,5 @@ model = dict(
                                       iou_cost=dict(type='IoUCost',
                                                     iou_mode='giou',
                                                     weight=2.0))),
-    test_cfg=dict(max_per_img=100))
+    test_cfg=dict(max_per_img=100,
+                logit_adj_tau=0.0))

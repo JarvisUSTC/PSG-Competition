@@ -183,7 +183,7 @@ def main():
                                    dist=distributed,
                                    shuffle=False)
 
-    if os.path.exists(args.out):
+    if args.out is not None and os.path.exists(args.out):
         print('starting load pkl')
         outputs = mmcv.load(args.out)
         rank, _ = get_dist_info()

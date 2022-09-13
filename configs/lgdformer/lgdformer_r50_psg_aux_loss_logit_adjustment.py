@@ -114,8 +114,11 @@ model = dict(bbox_head=dict(
     predicate_node_generator=dict(
         num_rel_query=100,
         num_classes=len(object_classes),
-    ),
-), )
+        ),
+    ), 
+    test_cfg=dict(max_per_img=100,
+                logit_adj_tau=0.3),
+)
 
 img_norm_cfg = dict(mean=[123.675, 116.28, 103.53],
                     std=[58.395, 57.12, 57.375],

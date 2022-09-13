@@ -98,7 +98,7 @@ class LGDFormerHead(AnchorFreeHead):
                                     iou_cost=dict(type='IoUCost',
                                                   iou_mode='giou',
                                                   weight=2.0))),
-                 test_cfg=dict(max_per_img=100),
+                 test_cfg=dict(max_per_img=100, logit_adj_tau=0.0),
                  init_cfg=None,
                  **kwargs):
 
@@ -1254,6 +1254,28 @@ class LGDFormerHead(AnchorFreeHead):
         # NOTE defaultly only using outputs from the last feature level,
         # and only the outputs from the last decoder layer is used.
 
+        # Logit Adjustment https://arxiv.org/pdf/2007.07314.pdf
+        psg_rel_freq = [0.15031376, 0.04144597, 0.17209725, 0.20244892,
+                            0.03754787, 0.078283  , 0.01474781, 0.00047389, 0.00002675,
+                            0.00042038, 0.00072229, 0.02722937, 0.00436434, 0.00070701,
+                            0.07036451, 0.00561403, 0.02021279, 0.00320638, 0.00027898,
+                            0.00062293, 0.01094143, 0.03900774, 0.00881276, 0.01948285,
+                            0.0003172 , 0.00006115, 0.00475033, 0.00043567, 0.00024459,
+                            0.00059236, 0.00050446, 0.00003057, 0.00129554, 0.00013758,
+                            0.00003822, 0.00006115, 0.00712741, 0.00360765, 0.00026369,
+                            0.0012    , 0.00002675, 0.00007261, 0.00152102, 0.00067643,
+                            0.00050828, 0.00225478, 0.00762422, 0.02531471, 0.02144337,
+                            0.00214778, 0.00027898, 0.00278217, 0.00018344, 0.00009936,
+                            0.00195287, 0.00307262] # for psg dataset
+        if self.rel_cls_out_channels > len(psg_rel_freq):
+            psg_rel_freq = [1.] + psg_rel_freq
+        psg_rel_freq = torch.tensor(psg_rel_freq, dtype=torch.float, device=cls_scores['rel'].device)
+        self.psg_rel_freq = psg_rel_freq.log()
+        self.logit_adj_tau = 0.0
+        self.test_cfg.get('logit_adj_tau', self.logit_adj_tau)
+
+
+
         result_list = []
         for img_id in range(len(img_metas)):
             # od_cls_score = cls_scores['cls'][-1, img_id, ...]
@@ -1319,7 +1341,8 @@ class LGDFormerHead(AnchorFreeHead):
         s_scores, s_labels = s_logits.max(-1)
         o_scores, o_labels = o_logits.max(-1)
 
-        r_lgs = F.softmax(r_cls_score, dim=-1)
+        # r_lgs = F.softmax(r_cls_score, dim=-1) - self.logit_adj_tau * self.psg_rel_freq
+        r_lgs = F.softmax(r_cls_score - self.logit_adj_tau * self.psg_rel_freq, dim=-1)
         r_logits = r_lgs[..., 1:]
         r_scores, r_indexes = r_logits.reshape(-1).topk(max_per_img)
         r_labels = r_indexes % self.num_relations + 1
@@ -1362,8 +1385,8 @@ class LGDFormerHead(AnchorFreeHead):
             triplet_sub_ids = triplet_sub_ids[triplet_index].view(-1,1)
             triplet_obj_ids = triplet_obj_ids[triplet_index].view(-1,1)
             pan_rel_pairs = torch.cat((triplet_sub_ids,triplet_obj_ids), -1).to(torch.int).to(all_masks.device)
-            tri_obj_unique = pan_rel_pairs.unique()
-            keep = all_labels != (s_logits.shape[-1] - 1)
+            tri_obj_unique = pan_rel_pairs.unique() # equal to: pan_rel_pairs.view(-1).unique()
+            keep = all_labels != (s_logits.shape[-1] - 1) # why minus 1
             tmp = torch.zeros_like(keep, dtype=torch.bool)
             for id in tri_obj_unique:
                 tmp[id] = True
@@ -1487,6 +1510,24 @@ class LGDFormerHead(AnchorFreeHead):
                     rels = torch.tensor([0,0,0]).view(-1,3)
                 else:
                     rels = torch.cat((pan_rel_pairs,r_labels.unsqueeze(-1)),-1)
+                    # dedup_rels = rels.unique(dim=0)
+                    # dedup_r_labels = dedup_rels[...,-1]
+                    dedup_rel_index = torch.zeros_like(r_labels, dtype=torch.bool)
+                    dedup_rels_hand = []
+                    rels_numpy = rels.cpu().numpy()
+                    for r_index, rel in enumerate(rels_numpy):
+                        if rel.tolist() not in dedup_rels_hand:
+                            dedup_rels_hand.append(rel.tolist())
+                            dedup_rel_index[r_index] = True
+                    
+                    # rels = torch.as_tensor(dedup_rels_hand, dtype=rels.dtype, device=rels.device)
+                    rels = rels[dedup_rel_index]
+                    r_labels = r_labels[dedup_rel_index]
+                    r_dists = r_dists[dedup_rel_index]
+                    pan_rel_pairs = pan_rel_pairs[dedup_rel_index]
+
+
+
                 # if all_labels.numel() > 0:
                 #     # We know filter empty masks as long as we find some
                 #     while True:

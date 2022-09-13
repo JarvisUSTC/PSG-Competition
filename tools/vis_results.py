@@ -109,8 +109,7 @@ def main():
                     seg_map,
                     rels,
                     is_one_stage=args.one_stage,
-                    num_rel=args.topk,
-                    out_dir = osp.join(args.show_dir, f'{idx}/'),
+                    num_topk=args.topk,
                     out_file=out_filepath)
 
 
