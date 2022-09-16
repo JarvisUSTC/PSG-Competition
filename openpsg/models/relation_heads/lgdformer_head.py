@@ -35,6 +35,7 @@ class LGDFormerHead(AnchorFreeHead):
                  num_relations,
                  object_classes,
                  predicate_classes,
+                 num_things_classes=0,
                  num_obj_query=100,
                  num_rel_query=100,
                  num_reg_fcs=2,
@@ -171,6 +172,7 @@ class LGDFormerHead(AnchorFreeHead):
                 'exactly the same.'
             self.id_assigner = build_assigner(id_assigner)
             self.bbox_assigner = build_assigner(bbox_assigner)
+            self.bbox_assigner_type = bbox_assigner['type']
             # DETR sampling=False, so use PseudoSampler
             sampler_cfg = dict(type='PseudoSampler')
             self.sampler = build_sampler(sampler_cfg, context=self)
@@ -180,6 +182,7 @@ class LGDFormerHead(AnchorFreeHead):
         self.use_mask = use_mask
         self.temp = temp
         self.num_classes = num_classes
+        self.num_things_classes = num_things_classes
         self.num_relations = num_relations
         self.object_classes = object_classes
         self.predicate_classes = predicate_classes
@@ -984,10 +987,23 @@ class LGDFormerHead(AnchorFreeHead):
         assert len(gt_masks) == len(gt_bboxes)
 
         # assigner and sampler, only return human&object assign result
-        od_assign_result = self.bbox_assigner.assign(bbox_pred, cls_score,
-                                                     gt_bboxes, gt_labels,
-                                                     img_meta,
-                                                     gt_bboxes_ignore)
+        if self.use_mask and 'Mask' in self.bbox_assigner_type:
+            target_shape = mask_preds.shape[-2:]
+            if gt_masks.shape[0] > 0:
+                gt_masks_downsampled = F.interpolate(
+                    gt_masks.unsqueeze(1).float(), target_shape,
+                    mode='nearest').squeeze(1).long()
+            else:
+                gt_masks_downsampled = gt_masks
+            od_assign_result = self.bbox_assigner.assign(bbox_pred, cls_score, mask_preds,
+                                                        gt_bboxes, gt_labels, gt_masks_downsampled,
+                                                        img_meta, self.num_things_classes,
+                                                        gt_bboxes_ignore)
+        else:
+            od_assign_result = self.bbox_assigner.assign(bbox_pred, cls_score,
+                                                        gt_bboxes, gt_labels,
+                                                        img_meta,
+                                                        gt_bboxes_ignore)
         sampling_result = self.sampler.sample(od_assign_result, bbox_pred,
                                               gt_bboxes)
         od_pos_inds = sampling_result.pos_inds
@@ -1010,9 +1026,10 @@ class LGDFormerHead(AnchorFreeHead):
                                  align_corners=False).squeeze(1)
 
         # bbox targets for subjects and objects
+        od_pos_inds_bbox = od_pos_inds[gt_labels[sampling_result.pos_assigned_gt_inds] < self.num_things_classes]
         bbox_targets = torch.zeros_like(bbox_pred)
         bbox_weights = torch.zeros_like(bbox_pred)
-        bbox_weights[od_pos_inds] = 1.0
+        bbox_weights[od_pos_inds_bbox] = 1.0
 
         img_h, img_w, _ = img_meta['img_shape']
 
@@ -1176,13 +1193,16 @@ class LGDFormerHead(AnchorFreeHead):
             o_mask_preds = None
 
         # bbox targets for subjects and objects
+        pos_inds_sub_bbox = pos_inds[gt_sub_labels[s_sampling_result.pos_assigned_gt_inds] < self.num_things_classes]
         s_bbox_targets = torch.zeros_like(s_bbox_preds_aux)
         s_bbox_weights = torch.zeros_like(s_bbox_preds_aux)
-        s_bbox_weights[pos_inds] = 1.0
+        s_bbox_weights[pos_inds_sub_bbox] = 1.0
 
+        pos_inds_obj_bbox = pos_inds[gt_obj_labels[s_sampling_result.pos_assigned_gt_inds] < self.num_things_classes]
         o_bbox_targets = torch.zeros_like(o_bbox_preds_aux)
         o_bbox_weights = torch.zeros_like(o_bbox_preds_aux)
-        o_bbox_weights[pos_inds] = 1.0
+        o_bbox_weights[pos_inds_obj_bbox] = 1.0
+
         img_h, img_w, _ = img_meta['img_shape']
 
         # DETR regress the relative position of boxes (cxcywh) in the image.
