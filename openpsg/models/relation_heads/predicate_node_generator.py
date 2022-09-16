@@ -15,7 +15,7 @@ from mmdet.datasets.coco_panoptic import INSTANCE_OFFSET
 from mmdet.models.builder import HEADS, build_loss
 from mmdet.models.dense_heads import AnchorFreeHead
 from mmdet.models.utils import build_transformer
-from mmcv.cnn.bricks.transformer import build_transformer_layer_sequence
+from mmcv.cnn.bricks.transformer import build_transformer_layer_sequence, build_attention
 
 from mmcv.utils import Registry, build_from_cfg
 
@@ -26,6 +26,9 @@ import copy
 if version.parse(torchvision.__version__) < version.parse('0.7'):
     from torchvision.ops import _new_empty_tensor
     from torchvision.ops.misc import _output_size
+
+def _get_clones(module, N):
+    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 class HiddenInstance:
     def __init__(self, feature=None, box=None, seg=None, logits=None):
@@ -74,6 +77,8 @@ class Predicate_Node_Generator(BaseModule):
         entities_aware_decoder = None,
         num_rel_query = 100,
         entities_enhance_decoder = None,
+        intra_self_attention = None,
+        update_query_by_rel_hs=False,
         init_cfg = None,
     ):
         super(Predicate_Node_Generator, self).__init__(init_cfg=init_cfg)
@@ -120,7 +125,10 @@ class Predicate_Node_Generator(BaseModule):
 
         self.rel_entity_cross_decoder_norm = nn.LayerNorm(self.embed_dims)
 
-        self.update_query_by_rel_hs = False # It should be updated
+        self.update_query_by_rel_hs = update_query_by_rel_hs # It should be updated
+        if self.update_query_by_rel_hs:
+            self.update_sub_query_layernorm = nn.LayerNorm(self.embed_dims)
+            self.update_obj_query_layernorm = nn.LayerNorm(self.embed_dims)
         self.ent_dec_each_lvl = True # From ori SGTR
 
         self.ent_rel_fuse_fc_obj = nn.Sequential(nn.Linear(self.embed_dims, self.embed_dims))
@@ -136,6 +144,14 @@ class Predicate_Node_Generator(BaseModule):
         self.ent_rel_fuse_norm = nn.LayerNorm(self.embed_dims)
 
         self.num_decoder_layer = len(self.entities_aware_decoder.layers)
+
+        if intra_self_attention is not None:
+            intra_self_attention = build_attention(intra_self_attention)
+            intra_self_attention_layernorm = nn.LayerNorm(self.embed_dims)
+            self.intra_self_attention = _get_clones(intra_self_attention, self.num_decoder_layer)
+            self.intra_self_attention_layernorm = _get_clones(intra_self_attention_layernorm, self.num_decoder_layer)
+        else:
+            self.intra_self_attention = None
 
     def forward(
         self,
@@ -202,14 +218,24 @@ class Predicate_Node_Generator(BaseModule):
             rel_hs_out = None
 
             if self.predicate_decoder is not None:
-
+                
+                if self.intra_self_attention is not None:
+                    concat_sop_tgt = torch.cat([rel_tgt[:,:,None], ent_obj_tgt[:,:,None], ent_sub_tgt[:,:,None]], 2) # N_Q, B, 3, Dim
+                    concat_sop_pos_embed = torch.cat([query_embed_rel_init[:,:,None], query_embed_obj_init[:,:,None], query_embed_sub_init[:,:,None]], 2)
+                    concat_sop_embed = concat_sop_tgt + concat_sop_pos_embed
+                    concat_sop_embed = self.intra_self_attention[idx](concat_sop_embed.flatten(0,1).transpose(0,1)).transpose(0,1).reshape(concat_sop_embed.shape)
+                    concat_sop_embed = self.intra_self_attention_layernorm[idx](concat_sop_embed)
+                    rel_tgt = concat_sop_embed[:,:,0]
+                    ent_obj_tgt = concat_sop_embed[:,:,1]
+                    ent_sub_tgt = concat_sop_embed[:,:,2]
+                
                 predicate_sub_dec_output_dict = self.predicate_sub_decoder_layers[idx](
                     rel_tgt,
                     rel_memory,
                     rel_memory,
                     key_padding_mask=mask_flatten,
                     key_pos=src_pos_embed,
-                    query_pos=query_embed_rel_init,
+                    query_pos=query_embed_rel_init if self.intra_self_attention is None else None,
                 )
                 # w/o attn_weight and value sum
                 if self.predicate_decoder.post_norm is None:
@@ -227,7 +253,9 @@ class Predicate_Node_Generator(BaseModule):
 
                 # entity indicator sub-decoder
                 ent_sub_dec_outputs = self.entities_sub_decoder(
-                    ent_hs_input, query_embed_obj_init, query_embed_sub_init,
+                    ent_hs_input, 
+                    query_embed_obj_init if self.intra_self_attention is None else None,
+                    query_embed_sub_init if self.intra_self_attention is None else None,
                     ent_obj_tgt, ent_sub_tgt, start, idx, rel_hs_out, shared_encoder_memory, src_pos_embed, mask_flatten
                 )
                 ent_obj_tgt = ent_sub_dec_outputs['obj_ent_hs']
@@ -416,11 +444,6 @@ class Predicate_Node_Generator(BaseModule):
         rel_hs_out_obj_hs = []
         rel_hs_out_sub_hs = []
 
-        if self.update_query_by_rel_hs and rel_hs_out is not None:
-            ent_sub_tgt = ent_sub_tgt + rel_hs_out
-            ent_obj_tgt = ent_obj_tgt + rel_hs_out
-
-
         _sub_ent_dec_layers = self.rel_entity_cross_decoder_layers_sub
         _obj_ent_dec_layers = self.rel_entity_cross_decoder_layers_obj
 
@@ -546,6 +569,9 @@ class Predicate_Node_Generator(BaseModule):
         if rel_hs_out is not None:
             ent_aug_rel_hs_out = self.ent_rel_fuse_norm(rel_hs_out + ent_aug_rel_hs_out)
 
+        if self.update_query_by_rel_hs and rel_hs_out is not None:
+            ent_sub_tgt = self.update_sub_query_layernorm(ent_sub_tgt + rel_hs_out)
+            ent_obj_tgt = self.update_obj_query_layernorm(ent_obj_tgt + rel_hs_out)
 
         return {
             "ent_aug_rel_hs": ent_aug_rel_hs_out,
