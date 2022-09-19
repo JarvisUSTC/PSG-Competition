@@ -1,5 +1,5 @@
 _base_ = [
-    './lgdformer_r50_mask_matcher.py', '../_base_/datasets/psg.py',
+    './lgdformer_r50.py', '../_base_/datasets/psg.py',
     '../_base_/custom_runtime.py'
 ]
 
@@ -105,29 +105,29 @@ predicate_classes = [
 ]
 
 model = dict(bbox_head=dict(
-        num_classes=len(object_classes),
-        num_relations=len(predicate_classes),
-        object_classes=object_classes,
-        predicate_classes=predicate_classes,
-        num_obj_query=100,
+    num_classes=len(object_classes),
+    num_relations=len(predicate_classes),
+    object_classes=object_classes,
+    predicate_classes=predicate_classes,
+    num_obj_query=100,
+    num_rel_query=100,
+    predicate_node_generator=dict(
         num_rel_query=100,
-        predicate_node_generator=dict(
-            num_rel_query=100,
-            num_classes=len(object_classes),
-        ),
-        num_things_classes=80,
+        num_classes=len(object_classes),
+    ),
+    num_things_classes=80,
     ), 
     train_cfg=dict(
         bbox_assigner=dict(
             type='BoxMaskHungarianAssigner',
-            cls_cost=dict(type='ClassificationCost', weight=5.0),
-            reg_cost=dict(type='BBoxL1Cost', weight=5.0, box_format='xywh'),
+            cls_cost=dict(type='ClassificationCost', weight=4.0),
+            reg_cost=dict(type='BBoxL1Cost', weight=3.0, box_format='xywh'),
             iou_cost=dict(type='IoUCost', iou_mode='giou', weight=2.0),
             mask_cost=dict(
-                type='CrossEntropyLossCost', weight=5.0, use_sigmoid=True),
+                type='CrossEntropyLossCost', weight=1.0, use_sigmoid=True),
             dice_cost=dict(
-                type='DiceCost', weight=5.0, pred_act=True, eps=1.0)),
-    )
+                type='DiceCost', weight=1.0, pred_act=True, eps=1.0)),
+    )    
 )
 
 img_norm_cfg = dict(mean=[123.675, 116.28, 103.53],
@@ -225,7 +225,7 @@ optimizer = dict(
         custom_keys={
             'backbone': dict(lr_mult=0.1, decay_mult=1.0),
             'transformer.encoder': dict(lr_mult=0.1, decay_mult=1.0),
-            'transformer.decoder1': dict(lr_mult=0.1, decay_mult=1.0),
+            'transformer.decoder': dict(lr_mult=0.1, decay_mult=1.0),
             'obj_query_embed': dict(lr_mult=0.1, decay_mult=1.0),
             'input_proj': dict(lr_mult=0.1, decay_mult=1.0),
             'class_embed': dict(lr_mult=0.1, decay_mult=1.0),
@@ -240,8 +240,8 @@ optimizer_config = dict(grad_clip=dict(max_norm=0.1, norm_type=2))
 lr_config = dict(policy='step', step=40)
 runner = dict(type='EpochBasedRunner', max_epochs=60)
 
-project_name = 'lgdformer'
-expt_name = 'lgdformer_r50_psg_with_mask_matcher'
+project_name = 'psgformer'
+expt_name = 'lgdformer_r50_psg_without_stuff_v2'
 entity = 'psgyyds'
 work_dir = f'./work_dirs/{expt_name}'
 checkpoint_config = dict(interval=1, max_keep_ckpts=15, create_symlink=False)

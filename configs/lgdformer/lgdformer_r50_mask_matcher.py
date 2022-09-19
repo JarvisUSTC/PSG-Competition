@@ -153,7 +153,7 @@ model = dict(
                         reg_cost=dict(type='BBoxL1Cost', weight=5.0, box_format='xywh'),
                         iou_cost=dict(type='IoUCost', iou_mode='giou', weight=2.0),
                         mask_cost=dict(
-                            type='FocalLossCost', weight=2.0),
+                            type='CrossEntropyLossCost', weight=5.0, use_sigmoid=True),
                         dice_cost=dict(
                             type='DiceCost', weight=5.0, pred_act=True, eps=1.0))),
     test_cfg=dict(max_per_img=100,

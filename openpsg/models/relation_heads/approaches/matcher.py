@@ -271,7 +271,7 @@ class BoxMaskHungarianAssigner(BaseAssigner):
             #         mode='bilinear',
             #         align_corners=False).squeeze(1)
             if self.mask_cost.weight != 0:
-                mask_cost = self.mask_cost(mask_pred, gt_mask)
+                mask_cost = self.mask_cost(mask_pred.view(num_query,-1), gt_mask.view(num_gt,-1))
             else:
                 mask_cost = 0
 

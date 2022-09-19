@@ -35,7 +35,7 @@ class LGDFormerHead(AnchorFreeHead):
                  num_relations,
                  object_classes,
                  predicate_classes,
-                 num_things_classes=0,
+                 num_things_classes=200,
                  num_obj_query=100,
                  num_rel_query=100,
                  num_reg_fcs=2,
