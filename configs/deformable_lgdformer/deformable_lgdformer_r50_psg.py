@@ -146,39 +146,6 @@ model = dict(
         predicate_classes=predicate_classes,
         num_obj_query=100, # for compatible
         num_rel_query=100,
-        panoptic_head=dict(
-            as_two_stage=True, 
-            use_stuff_box=True,
-            mixed_selection=True,
-            with_box_refine=True,
-            transformer=dict(
-                mixed_selection=True,
-                encoder=dict(
-                    transformerlayers=dict(feedforward_channels=2048, ffn_dropout=0.0)
-                ),
-                decoder=dict(
-                    transformerlayers=dict(feedforward_channels=2048,
-                        ffn_dropout=0.0,
-                        attn_cfgs=[
-                            dict(
-                                type='MultiheadAttention',
-                                embed_dims=256,
-                                num_heads=8,
-                                dropout=0.0),
-                            dict(
-                                type='MultiScaleDeformableAttention',
-                                embed_dims=256)
-                        ],),
-                    look_forward_twice=True,
-                    
-                ),
-            ),
-            mask_assigner=dict(
-                mask_cost=dict(weight=2.0), 
-                dice_cost=dict(weight=2.0)),
-            loss_mask=dict(loss_weight=2.0),
-            loss_dice=dict(loss_weight=2.0),
-        ),
         predicate_node_generator=dict(
             num_rel_query=100,
             num_classes=len(object_classes),

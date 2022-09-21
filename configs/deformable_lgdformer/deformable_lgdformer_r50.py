@@ -40,7 +40,7 @@ model = dict(
             type='Hybrid_DeformableDetrTransformer',
             encoder=dict(
                 type='Hybrid_DetrTransformerEncoder',
-                use_checkpoint=False,
+                use_checkpoint=True,
                 num_layers=6,
                 transformerlayers=dict(
                     type='Hybrid_DETRBaseTransformerLayer',
@@ -53,7 +53,7 @@ model = dict(
                 type='Hybrid_DeformableDetrTransformerDecoder',
                 num_layers=6,
                 return_intermediate=True,
-                use_checkpoint=False,
+                use_checkpoint=True,
                 transformerlayers=dict(
                     type='Hybrid_DetrTransformerDecoderLayer',
                     attn_cfgs=[
@@ -101,84 +101,6 @@ model = dict(
         num_classes=80,
         num_relations=117,
         in_channels=2048,
-        panoptic_head=dict(
-            type='DeformableDETRMaskHead',
-            num_query=300,
-            num_things_classes=80,
-            num_stuff_classes=53,
-            num_classes=133,
-            in_channels=2048,
-            sync_cls_avg_factor=True,
-            as_two_stage=False,
-            mask_assigner=dict(
-                type='BoxMaskHungarianAssigner',
-                cls_cost=dict(type='FocalLossCost', weight=2.0),
-                reg_cost=dict(type='BBoxL1Cost', weight=5.0, box_format='xywh'),
-                iou_cost=dict(type='IoUCost', iou_mode='giou', weight=2.0),
-                mask_cost=dict(
-                    type='CrossEntropyLossCost', weight=5.0, use_sigmoid=True),
-                dice_cost=dict(
-                    type='DiceCost', weight=5.0, pred_act=True, eps=1.0)),
-            transformer=dict(
-                type='Hybrid_DeformableDetrTransformer',
-                encoder=dict(
-                    type='Hybrid_DetrTransformerEncoder',
-                    use_checkpoint=True,
-                    num_layers=6,
-                    transformerlayers=dict(
-                        type='Hybrid_DETRBaseTransformerLayer',
-                        attn_cfgs=dict(
-                            type='MultiScaleDeformableAttention', embed_dims=256),
-                        feedforward_channels=1024,
-                        ffn_dropout=0.1,
-                        operation_order=('self_attn', 'norm', 'ffn', 'norm'))),
-                decoder=dict(
-                    type='Hybrid_DeformableDetrTransformerDecoder',
-                    num_layers=6,
-                    return_intermediate=True,
-                    use_checkpoint=True,
-                    transformerlayers=dict(
-                        type='Hybrid_DetrTransformerDecoderLayer',
-                        attn_cfgs=[
-                            dict(
-                                type='MultiheadAttention',
-                                embed_dims=256,
-                                num_heads=8,
-                                dropout=0.1),
-                            dict(
-                                type='MultiScaleDeformableAttention',
-                                embed_dims=256)
-                        ],
-                        feedforward_channels=1024,
-                        ffn_dropout=0.1,
-                        operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
-                                        'ffn', 'norm')))),
-            positional_encoding=dict(
-                type='SinePositionalEncoding',
-                num_feats=128,
-                normalize=True,
-                offset=-0.5),
-            loss_cls=dict(
-                type='FocalLoss',
-                use_sigmoid=True,
-                gamma=2.0,
-                alpha=0.25,
-                loss_weight=2.0),
-            loss_bbox=dict(type='L1Loss', loss_weight=5.0),
-            loss_iou=dict(type='GIoULoss', loss_weight=2.0),
-            loss_mask=dict(
-                type='CrossEntropyLoss',
-                use_sigmoid=True,
-                reduction='mean',
-                loss_weight=5.0),
-            loss_dice=dict(
-                type='Hybrid_DiceLoss',
-                use_sigmoid=True,
-                activate=True,
-                reduction='mean',
-                naive_dice=True,
-                eps=1.0,
-                loss_weight=5.0)),
         predicate_node_generator=dict(
             type='Predicate_Node_Generator',
             num_classes=80,

@@ -147,6 +147,7 @@ class DeformablePSGTr(SingleStageDetector):
                                             gt_labels, gt_masks,
                                             gt_semantic_seg,
                                             gt_bboxes_ignore)
+        losses = dict()
         losses = self.bbox_head.forward_train(x, img, img_metas, entity_query_embedding, enc_memory, 
                                               entity_all_bbox_preds, entity_all_cls_scores, gt_rels, gt_bboxes,
                                               gt_labels, gt_masks_rel_head, gt_semantic_seg,
