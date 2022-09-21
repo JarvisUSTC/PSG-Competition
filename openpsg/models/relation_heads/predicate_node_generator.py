@@ -85,9 +85,11 @@ class Predicate_Node_Generator(BaseModule):
         if rel_encoder is not None:
             # Shared memory with entities encoder
             self.encoder = build_transformer_layer_sequence(rel_encoder)
-        self.embed_dims = self.encoder.embed_dims
+        else:
+            self.encoder = None
 
         self.predicate_decoder = build_transformer_layer_sequence(rel_decoder)
+        self.embed_dims = self.predicate_decoder.embed_dims
         self.predicate_sub_decoder_layers = copy.deepcopy(self.predicate_decoder.layers)
         self.rel_decoder_norm = nn.LayerNorm(self.embed_dims)
 

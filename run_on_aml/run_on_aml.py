@@ -211,7 +211,11 @@ def install_conda_and_create_new_env(args):
     print(cmd)
     os.system(cmd)
 
-
+    cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
+    cmd += f"cd {args.working_dir}/openpsg/models/utils/ops \n"
+    cmd += f"sh make.sh \n"
+    print(cmd)
+    os.system(cmd)
 
 
 def barrier(args, machine_rank, num_machines, dist_url):

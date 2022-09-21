@@ -1,5 +1,5 @@
 model = dict(
-    type='PSGTr',
+    type='DeformablePSGTr',
     backbone=dict(type='ResNet',
                   depth=50,
                   num_stages=4,
@@ -10,42 +10,97 @@ model = dict(
                   style='pytorch',
                   init_cfg=dict(type='Pretrained',
                                 checkpoint='torchvision://resnet50')),
+    neck=dict(
+        type='ChannelMapper',
+        in_channels=[256, 512, 1024, 2048],
+        kernel_size=1,
+        out_channels=256,
+        act_cfg=None,
+        norm_cfg=dict(type='GN', num_groups=32),
+        num_outs=5),
+    panoptic_head=dict(
+        type='DeformableDETRMaskHead',
+        num_query=300,
+        num_things_classes=80,
+        num_stuff_classes=53,
+        num_classes=133,
+        in_channels=2048,
+        sync_cls_avg_factor=True,
+        as_two_stage=False,
+        mask_assigner=dict(
+            type='BoxMaskHungarianAssigner',
+            cls_cost=dict(type='FocalLossCost', weight=2.0),
+            reg_cost=dict(type='BBoxL1Cost', weight=5.0, box_format='xywh'),
+            iou_cost=dict(type='IoUCost', iou_mode='giou', weight=2.0),
+            mask_cost=dict(
+                type='CrossEntropyLossCost', weight=5.0, use_sigmoid=True),
+            dice_cost=dict(
+                type='DiceCost', weight=5.0, pred_act=True, eps=1.0)),
+        transformer=dict(
+            type='Hybrid_DeformableDetrTransformer',
+            encoder=dict(
+                type='Hybrid_DetrTransformerEncoder',
+                use_checkpoint=False,
+                num_layers=6,
+                transformerlayers=dict(
+                    type='Hybrid_DETRBaseTransformerLayer',
+                    attn_cfgs=dict(
+                        type='MultiScaleDeformableAttention', embed_dims=256),
+                    feedforward_channels=1024,
+                    ffn_dropout=0.1,
+                    operation_order=('self_attn', 'norm', 'ffn', 'norm'))),
+            decoder=dict(
+                type='Hybrid_DeformableDetrTransformerDecoder',
+                num_layers=6,
+                return_intermediate=True,
+                use_checkpoint=False,
+                transformerlayers=dict(
+                    type='Hybrid_DetrTransformerDecoderLayer',
+                    attn_cfgs=[
+                        dict(
+                            type='MultiheadAttention',
+                            embed_dims=256,
+                            num_heads=8,
+                            dropout=0.1),
+                        dict(
+                            type='MultiScaleDeformableAttention',
+                            embed_dims=256)
+                    ],
+                    feedforward_channels=1024,
+                    ffn_dropout=0.1,
+                    operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
+                                    'ffn', 'norm')))),
+        positional_encoding=dict(
+            type='SinePositionalEncoding',
+            num_feats=128,
+            normalize=True,
+            offset=-0.5),
+        loss_cls=dict(
+            type='FocalLoss',
+            use_sigmoid=True,
+            gamma=2.0,
+            alpha=0.25,
+            loss_weight=2.0),
+        loss_bbox=dict(type='L1Loss', loss_weight=5.0),
+        loss_iou=dict(type='GIoULoss', loss_weight=2.0),
+        loss_mask=dict(
+            type='CrossEntropyLoss',
+            use_sigmoid=True,
+            reduction='mean',
+            loss_weight=5.0),
+        loss_dice=dict(
+            type='Hybrid_DiceLoss',
+            use_sigmoid=True,
+            activate=True,
+            reduction='mean',
+            naive_dice=True,
+            eps=1.0,
+            loss_weight=5.0)),
     bbox_head=dict(
-        type='LGDFormerHead',
+        type='DeformableLGDFormerHead',
         num_classes=80,
         num_relations=117,
         in_channels=2048,
-        transformer=dict(
-            type='Transformer',
-            encoder=dict(type='DetrTransformerEncoder',
-                         num_layers=6,
-                         transformerlayers=dict(
-                             type='BaseTransformerLayer',
-                             attn_cfgs=[
-                                 dict(type='MultiheadAttention',
-                                      embed_dims=256,
-                                      num_heads=8,
-                                      dropout=0.1)
-                             ],
-                             feedforward_channels=2048,
-                             ffn_dropout=0.1,
-                             operation_order=('self_attn', 'norm', 'ffn',
-                                              'norm'))),
-            decoder=dict(type='DetrTransformerDecoder',
-                          return_intermediate=True,
-                          num_layers=6,
-                          transformerlayers=dict(
-                              type='DetrTransformerDecoderLayer',
-                              attn_cfgs=dict(type='MultiheadAttention',
-                                             embed_dims=256,
-                                             num_heads=8,
-                                             dropout=0.1),
-                              feedforward_channels=2048,
-                              ffn_dropout=0.1,
-                              operation_order=('self_attn', 'norm',
-                                               'cross_attn', 'norm', 'ffn',
-                                               'norm'))),
-        ),
         panoptic_head=dict(
             type='DeformableDETRMaskHead',
             num_query=300,
@@ -65,25 +120,25 @@ model = dict(
                 dice_cost=dict(
                     type='DiceCost', weight=5.0, pred_act=True, eps=1.0)),
             transformer=dict(
-                type='DeformableDetrTransformer',
+                type='Hybrid_DeformableDetrTransformer',
                 encoder=dict(
-                    type='DetrTransformerEncoder',
+                    type='Hybrid_DetrTransformerEncoder',
                     use_checkpoint=True,
                     num_layers=6,
                     transformerlayers=dict(
-                        type='DETRBaseTransformerLayer',
+                        type='Hybrid_DETRBaseTransformerLayer',
                         attn_cfgs=dict(
                             type='MultiScaleDeformableAttention', embed_dims=256),
                         feedforward_channels=1024,
                         ffn_dropout=0.1,
                         operation_order=('self_attn', 'norm', 'ffn', 'norm'))),
                 decoder=dict(
-                    type='DeformableDetrTransformerDecoder',
+                    type='Hybrid_DeformableDetrTransformerDecoder',
                     num_layers=6,
                     return_intermediate=True,
                     use_checkpoint=True,
                     transformerlayers=dict(
-                        type='DetrTransformerDecoderLayer',
+                        type='Hybrid_DetrTransformerDecoderLayer',
                         attn_cfgs=[
                             dict(
                                 type='MultiheadAttention',
@@ -117,7 +172,7 @@ model = dict(
                 reduction='mean',
                 loss_weight=5.0),
             loss_dice=dict(
-                type='DiceLoss',
+                type='Hybrid_DiceLoss',
                 use_sigmoid=True,
                 activate=True,
                 reduction='mean',
@@ -143,7 +198,7 @@ model = dict(
                                               'norm'))),
             rel_decoder=dict(type='DetrTransformerDecoder',
                           return_intermediate=True,
-                          num_layers=6,
+                          num_layers=3,
                           transformerlayers=dict(
                               type='DetrTransformerDecoderLayer',
                               attn_cfgs=dict(type='MultiheadAttention',
@@ -171,7 +226,7 @@ model = dict(
                                                'norm'))),
             entities_aware_decoder=dict(type='DetrTransformerDecoder',
                           return_intermediate=True,
-                          num_layers=6,
+                          num_layers=3,
                           transformerlayers=dict(
                               type='DetrTransformerDecoderLayer',
                               attn_cfgs=dict(type='MultiheadAttention',
@@ -218,20 +273,29 @@ model = dict(
         focal_loss=dict(type='BCEFocalLoss', loss_weight=1.0),
         dice_loss=dict(type='psgtrDiceLoss', loss_weight=1.0)),
     # training and testing settings
-    train_cfg=dict(id_assigner=dict(type='IdMatcher',
-                                    sub_id_cost=dict(type='ClassificationCost',
-                                                     weight=1.),
-                                    obj_id_cost=dict(type='ClassificationCost',
-                                                     weight=1.),
-                                    r_cls_cost=dict(type='ClassificationCost',
-                                                    weight=1.)),
-                   bbox_assigner=dict(type='HungarianAssigner',
-                                      cls_cost=dict(type='ClassificationCost',
-                                                    weight=4.0),
-                                      reg_cost=dict(type='BBoxL1Cost',
-                                                    weight=3.0),
-                                      iou_cost=dict(type='IoUCost',
-                                                    iou_mode='giou',
-                                                    weight=2.0))),
+    train_cfg=dict(
+        num_points=12544,
+        oversample_ratio=3.0,
+        importance_sample_ratio=0.75,
+        assigner=dict(
+            type='HungarianAssigner',
+            cls_cost=dict(type='FocalLossCost', weight=2.0),
+            reg_cost=dict(type='BBoxL1Cost', weight=5.0, box_format='xywh'),
+            iou_cost=dict(type='IoUCost', iou_mode='giou', weight=2.0),),
+        id_assigner=dict(type='IdMatcher',
+            sub_id_cost=dict(type='ClassificationCost',
+                                weight=1.),
+            obj_id_cost=dict(type='ClassificationCost',
+                                weight=1.),
+            r_cls_cost=dict(type='ClassificationCost',
+                            weight=1.)),
+        bbox_assigner=dict(type='HungarianAssigner',
+            cls_cost=dict(type='ClassificationCost',
+                        weight=4.0),
+            reg_cost=dict(type='BBoxL1Cost',
+                        weight=3.0),
+            iou_cost=dict(type='IoUCost',
+                        iou_mode='giou',
+                        weight=2.0))),
     test_cfg=dict(max_per_img=100,
                 logit_adj_tau=0.0))
