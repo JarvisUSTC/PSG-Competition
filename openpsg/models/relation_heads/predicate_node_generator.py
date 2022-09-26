@@ -92,6 +92,12 @@ class Predicate_Node_Generator(BaseModule):
         self.embed_dims = self.predicate_decoder.embed_dims
         self.predicate_sub_decoder_layers = copy.deepcopy(self.predicate_decoder.layers)
         self.rel_decoder_norm = nn.LayerNorm(self.embed_dims)
+        if self.predicate_decoder.post_norm is None:
+            self.rel_decoder_norm = nn.LayerNorm(self.embed_dims)
+        else:
+            self.rel_decoder_norm = None
+        del self.predicate_decoder
+        self.predicate_decoder = True
 
         self.dynamic_query_on = True
         self.queries_cache = {}
@@ -102,9 +108,9 @@ class Predicate_Node_Generator(BaseModule):
         self.rel_query_embed = nn.Embedding(self.num_rel_queries,
                                             self.embed_dims)
 
-        self.coord_points_embed = nn.Sequential(nn.Linear(4, self.embed_dims)) # Do not use it....
+        # self.coord_points_embed = nn.Sequential(nn.Linear(4, self.embed_dims)) # Do not use it....
         self.num_classes = num_classes
-        self.logits_embed = nn.Linear(self.num_classes + 1, self.embed_dims)
+        # self.logits_embed = nn.Linear(self.num_classes + 1, self.embed_dims)
         self.ent_pos_sine_proj = nn.Linear(self.embed_dims, self.embed_dims)
         self.split_query = nn.Sequential(nn.ReLU(True), nn.Linear(self.embed_dims, self.embed_dims * 3))
 
@@ -117,7 +123,7 @@ class Predicate_Node_Generator(BaseModule):
         else:
             self.entities_enhance_decoder = None
 
-        self.ent_pred_fuse_layernorm = nn.LayerNorm(self.embed_dims)
+        # self.ent_pred_fuse_layernorm = nn.LayerNorm(self.embed_dims)
 
         self.rel_query_embed_sub = nn.Embedding(self.num_rel_queries, self.embed_dims)
         self.rel_query_embed_obj = nn.Embedding(self.num_rel_queries, self.embed_dims)
@@ -125,7 +131,13 @@ class Predicate_Node_Generator(BaseModule):
         self.rel_entity_cross_decoder_layers_obj = copy.deepcopy(self.entities_aware_decoder.layers)
         self.rel_entity_cross_decoder_layers_sub = copy.deepcopy(self.entities_aware_decoder.layers)
 
-        self.rel_entity_cross_decoder_norm = nn.LayerNorm(self.embed_dims)
+        self.num_decoder_layer = len(self.entities_aware_decoder.layers)
+        if self.entities_aware_decoder.post_norm is None:
+            self.rel_entity_cross_decoder_norm = nn.LayerNorm(self.embed_dims)
+        else:
+            self.rel_entity_cross_decoder_norm = None
+        del self.entities_aware_decoder
+        self.entities_aware_decoder = True
 
         self.update_query_by_rel_hs = update_query_by_rel_hs # It should be updated
         if self.update_query_by_rel_hs:
@@ -144,8 +156,6 @@ class Predicate_Node_Generator(BaseModule):
         self.ent_rel_fuse_norm_sub = nn.LayerNorm(self.embed_dims)
 
         self.ent_rel_fuse_norm = nn.LayerNorm(self.embed_dims)
-
-        self.num_decoder_layer = len(self.entities_aware_decoder.layers)
 
         if intra_self_attention is not None:
             intra_self_attention = build_attention(intra_self_attention)
@@ -182,7 +192,7 @@ class Predicate_Node_Generator(BaseModule):
         # [bz, w, h]
         mask_flatten = mask.flatten(1)
 
-        device = query_embed.device
+        device = src_pos_embed.device
 
         bs, h, w, rel_memory = self.rel_encoder(
             src, src_pos_embed, shared_encoder_memory, mask_flatten
@@ -240,7 +250,7 @@ class Predicate_Node_Generator(BaseModule):
                     query_pos=query_embed_rel_init if self.intra_self_attention is None else None,
                 )
                 # w/o attn_weight and value sum
-                if self.predicate_decoder.post_norm is None:
+                if self.rel_decoder_norm is not None:
                     rel_tgt = self.rel_decoder_norm(predicate_sub_dec_output_dict)
                 else:
                     rel_tgt = predicate_sub_dec_output_dict
@@ -507,7 +517,7 @@ class Predicate_Node_Generator(BaseModule):
                 ent_obj_tgt = ent_obj_output_dict
                 ent_sub_tgt = ent_sub_output_dict
 
-                if self.entities_aware_decoder.post_norm is None:
+                if self.rel_entity_cross_decoder_norm is not None:
                     rel_hs_sub = self.rel_entity_cross_decoder_norm(ent_sub_tgt)
                     rel_hs_obj = self.rel_entity_cross_decoder_norm(ent_obj_tgt)
                 else:
@@ -546,7 +556,7 @@ class Predicate_Node_Generator(BaseModule):
                 ent_obj_tgt = ent_obj_output_dict
                 ent_sub_tgt = ent_sub_output_dict
 
-                if self.entities_aware_decoder.post_norm is None:
+                if self.rel_entity_cross_decoder_norm is not None:
                     rel_hs_sub = self.rel_entity_cross_decoder_norm(ent_sub_tgt)
                     rel_hs_obj = self.rel_entity_cross_decoder_norm(ent_obj_tgt)
                 else:

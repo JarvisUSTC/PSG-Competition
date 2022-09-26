@@ -259,7 +259,7 @@ optimizer = dict(
 optimizer_config = dict(grad_clip=dict(max_norm=0.01, norm_type=2))
 
 # learning policy
-lr_config = dict(policy='step', step=40)
+lr_config = dict(policy='step', step=15)
 # optimizer = dict(
 #     type='AdamW',
 #     lr=0.0001,
@@ -279,7 +279,7 @@ lr_config = dict(policy='step', step=40)
 #     warmup_by_epoch=False,
 #     warmup_ratio=1.0,  # no warmup
 #     warmup_iters=10)
-runner = dict(type='EpochBasedRunner', max_epochs=60)
+runner = dict(type='EpochBasedRunner', max_epochs=20)
 
 project_name = 'deformable_lgdformer'
 expt_name = 'deformable_lgdformer_r50_psg_2022_9_23'

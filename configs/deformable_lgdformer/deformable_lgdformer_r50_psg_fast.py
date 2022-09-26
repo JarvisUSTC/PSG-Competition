@@ -153,9 +153,9 @@ model = dict(
             rel_encoder=None, # Shared encoder memory to save memory
         ),
         sub_mask_loss=dict(loss_weight=2.0),
-        sub_dice_loss=dict(loss_weight=2.0),
+        sub_dice_loss=dict(type='psgtrDiceLoss', loss_weight=2.0),
         obj_mask_loss=dict(loss_weight=2.0),
-        obj_dice_loss=dict(loss_weight=2.0),
+        obj_dice_loss=dict(type='psgtrDiceLoss', loss_weight=2.0),
 ), )
 
 img_norm_cfg = dict(mean=[123.675, 116.28, 103.53],

@@ -115,6 +115,7 @@ def main():
         cfg.gpu_ids = args.gpu_ids
     else:
         cfg.gpu_ids = range(1) if args.gpus is None else range(args.gpus)
+    cfg.device='cuda'
 
     # init distributed env first, since logger depends on the dist info.
     if args.launcher == 'none':

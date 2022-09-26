@@ -174,12 +174,12 @@ def install_conda_and_create_new_env(args):
 
     # create new env
     cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
-    cmd += f"conda env create -f {args.working_dir}/environment.yml \n"
+    cmd += f"conda env create -f {args.working_dir}/environment_debug.yml \n"
     print(cmd)
     sp.run(cmd, shell=True, check=True)
 
     cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
-    cmd += "pip install mmcv-full==1.4.3 -f https://download.openmmlab.com/mmcv/dist/cu102/torch1.7.0/index.html"
+    cmd += "pip install mmcv-full==1.5.3 -f https://download.openmmlab.com/mmcv/dist/cu102/torch1.7.0/index.html"
     print(cmd)
     os.system(cmd)
 
@@ -189,7 +189,7 @@ def install_conda_and_create_new_env(args):
     os.system(cmd)
 
     cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
-    cmd += "pip install mmdet==2.20.0"
+    cmd += "pip install mmdet==2.25.0"
     print(cmd)
     os.system(cmd)
 
@@ -217,6 +217,10 @@ def install_conda_and_create_new_env(args):
     print(cmd)
     os.system(cmd)
 
+    cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
+    cmd += f"pip list \n"
+    print(cmd)
+    os.system(cmd)
 
 
 

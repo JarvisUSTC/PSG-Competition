@@ -33,9 +33,9 @@ model = dict(
             reg_cost=dict(type='BBoxL1Cost', weight=5.0, box_format='xywh'),
             iou_cost=dict(type='IoUCost', iou_mode='giou', weight=2.0),
             mask_cost=dict(
-                type='CrossEntropyLossCost', weight=5.0, use_sigmoid=True),
+                type='Hybrid_CrossEntropyLossCost', weight=5.0, use_sigmoid=True),
             dice_cost=dict(
-                type='DiceCost', weight=5.0, pred_act=True, eps=1.0)),
+                type='Hybrid_DiceCost', weight=5.0, pred_act=True, eps=1.0)),
         transformer=dict(
             type='Hybrid_DeformableDetrTransformer',
             encoder=dict(
@@ -159,7 +159,7 @@ model = dict(
                               ffn_dropout=0.1,
                               operation_order=('self_attn', 'norm',
                                                'cross_attn', 'norm', 'ffn',
-                                               'norm'))),                            
+                                               'norm'))),
         ),
         positional_encoding=dict(type='SinePositionalEncoding',
                                  num_feats=128,
@@ -171,7 +171,20 @@ model = dict(
         sub_loss_bbox=dict(type='L1Loss', loss_weight=5.0),
         sub_loss_iou=dict(type='GIoULoss', loss_weight=2.0),
         sub_focal_loss=dict(type='BCEFocalLoss', loss_weight=2.0),
-        sub_dice_loss=dict(type='psgtrDiceLoss', loss_weight=2.0),
+        # sub_dice_loss=dict(type='psgtrDiceLoss', loss_weight=2.0),
+        sub_mask_loss=dict(
+            type='CrossEntropyLoss',
+            use_sigmoid=True,
+            reduction='mean',
+            loss_weight=5.0),
+        sub_dice_loss=dict(
+            type='Hybrid_DiceLoss',
+            use_sigmoid=True,
+            activate=True,
+            reduction='mean',
+            naive_dice=True,
+            eps=1.0,
+            loss_weight=5.0),
         obj_loss_cls=dict(type='CrossEntropyLoss',
                             use_sigmoid=False,
                             loss_weight=1.0,
@@ -179,7 +192,20 @@ model = dict(
         obj_loss_bbox=dict(type='L1Loss', loss_weight=5.0),
         obj_loss_iou=dict(type='GIoULoss', loss_weight=2.0),
         obj_focal_loss=dict(type='BCEFocalLoss', loss_weight=2.0),
-        obj_dice_loss=dict(type='psgtrDiceLoss', loss_weight=2.0),
+        # obj_dice_loss=dict(type='psgtrDiceLoss', loss_weight=2.0),
+        obj_mask_loss=dict(
+            type='CrossEntropyLoss',
+            use_sigmoid=True,
+            reduction='mean',
+            loss_weight=5.0),
+        obj_dice_loss=dict(
+            type='Hybrid_DiceLoss',
+            use_sigmoid=True,
+            activate=True,
+            reduction='mean',
+            naive_dice=True,
+            eps=1.0,
+            loss_weight=5.0),
         rel_loss_cls=dict(type='CrossEntropyLoss',
                           use_sigmoid=False,
                           loss_weight=2.0,
@@ -219,5 +245,14 @@ model = dict(
             iou_cost=dict(type='IoUCost',
                         iou_mode='giou',
                         weight=2.0))),
-    test_cfg=dict(max_per_img=100,
-                logit_adj_tau=0.0))
+    test_cfg=dict(
+        max_per_img=100, 
+        panoptic_on=True,
+        semantic_on=False,
+        instance_on=True,
+        object_mask_thr=0.30,
+        iou_thr=0.8,
+        # In Mask2Former's panoptic postprocessing,
+        # it will filter mask area where score is less than 0.5 .
+        filter_low_score=True,
+        logit_adj_tau=0.0))

@@ -34,7 +34,7 @@ class IndexCost:
         return ent_pair_match_score * self.weight
 
 @MATCH_COST.register_module()
-class DiceCost:
+class Hybrid_DiceCost:
     """Cost of mask assignments based on dice losses.
 
     Args:
@@ -94,7 +94,7 @@ class DiceCost:
 
 
 @MATCH_COST.register_module()
-class CrossEntropyLossCost:
+class Hybrid_CrossEntropyLossCost:
     """CrossEntropyLossCost.
 
     Args:

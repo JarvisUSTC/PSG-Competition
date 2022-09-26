@@ -161,7 +161,7 @@ class DeformablePSGTr(SingleStageDetector):
         mask_cls_results, mask_pred_results, entity_query_embedding, enc_memory, entity_all_bbox_preds, entity_all_cls_scores = self.panoptic_head.simple_test(
             feat, img_metas
         )
-        results_list = self.bbox_head.simple_test(feat,
+        results_list = self.bbox_head.simple_test_bboxes(feat,
                                                   img_metas,
                                                   entity_query_embedding, 
                                                   enc_memory, 

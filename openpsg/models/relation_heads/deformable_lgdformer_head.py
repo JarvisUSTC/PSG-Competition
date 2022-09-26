@@ -7,6 +7,8 @@ import torch.nn.functional as F
 import torchvision
 from mmcv.cnn import Conv2d, Linear, build_activation_layer
 from mmcv.cnn.bricks.transformer import build_positional_encoding
+from openpsg.models.utils import get_uncertain_point_coords_with_randomness
+from mmcv.ops import point_sample
 from mmcv.runner import force_fp32
 from mmdet.core import (bbox_cxcywh_to_xyxy, bbox_xyxy_to_cxcywh,
                         build_assigner, build_sampler, multi_apply,
@@ -18,6 +20,7 @@ from mmdet.models.utils import build_transformer
 from .predicate_node_generator import build_predicate_node_generator
 #####imports for tools
 from packaging import version
+import gc
 
 if version.parse(torchvision.__version__) < version.parse('0.7'):
     from torchvision.ops import _new_empty_tensor
@@ -56,6 +59,11 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                 sub_loss_iou=dict(type='GIoULoss', loss_weight=2.0),
                 sub_focal_loss=dict(type='BCEFocalLoss', loss_weight=1.0),
                 sub_dice_loss=dict(type='DiceLoss', loss_weight=1.0),
+                sub_mask_loss=dict(
+                    type='CrossEntropyLoss',
+                    use_sigmoid=True,
+                    reduction='mean',
+                    loss_weight=5.0),
                 obj_loss_cls=dict(type='CrossEntropyLoss',
                                 use_sigmoid=False,
                                 loss_weight=1.0,
@@ -64,6 +72,11 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                 obj_loss_iou=dict(type='GIoULoss', loss_weight=2.0),
                 obj_focal_loss=dict(type='BCEFocalLoss', loss_weight=1.0),
                 obj_dice_loss=dict(type='DiceLoss', loss_weight=1.0),
+                obj_mask_loss=dict(
+                    type='CrossEntropyLoss',
+                    use_sigmoid=True,
+                    reduction='mean',
+                    loss_weight=5.0),
                  rel_loss_cls=dict(type='CrossEntropyLoss',
                                    use_sigmoid=False,
                                    loss_weight=2.0,
@@ -175,6 +188,11 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             # DETR sampling=False, so use PseudoSampler
             sampler_cfg = dict(type='PseudoSampler')
             self.sampler = build_sampler(sampler_cfg, context=self)
+
+            self.num_points = train_cfg.get('num_points', 12544)
+            self.oversample_ratio = train_cfg.get('oversample_ratio', 3.0)
+            self.importance_sample_ratio = train_cfg.get(
+                'importance_sample_ratio', 0.75)
         assert num_obj_query == num_rel_query
         self.num_obj_query = num_obj_query
         self.num_rel_query = num_rel_query
@@ -214,6 +232,8 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             self.obj_dice_loss = build_loss(obj_dice_loss)
             # self.sub_focal_loss = build_loss(sub_focal_loss)
             self.sub_dice_loss = build_loss(sub_dice_loss)
+            self.obj_mask_loss = build_loss(obj_mask_loss)
+            self.sub_mask_loss = build_loss(sub_mask_loss)
 
         if self.obj_loss_cls.use_sigmoid:
             self.obj_cls_out_channels = num_classes
@@ -256,8 +276,8 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         #                          kernel_size=1)
         # self.obj_query_embed = nn.Embedding(self.num_obj_query,
         #                                     self.embed_dims)
-        self.rel_query_embed = nn.Embedding(self.num_rel_query,
-                                            self.embed_dims)
+        # self.rel_query_embed = nn.Embedding(self.num_rel_query,
+        #                                     self.embed_dims)
 
         # self.class_embed = Linear(self.embed_dims, self.cls_out_channels)
         # self.box_embed = MLP(self.embed_dims, self.embed_dims, 4, 3)
@@ -270,9 +290,9 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             Linear(self.embed_dims, self.embed_dims), nn.ReLU(inplace=True),
             Linear(self.embed_dims, self.embed_dims))
 
-        self.sop_query_update = nn.Sequential(
-            Linear(2 * self.embed_dims, self.embed_dims),
-            nn.ReLU(inplace=True), Linear(self.embed_dims, self.embed_dims))
+        # self.sop_query_update = nn.Sequential(
+        #     Linear(2 * self.embed_dims, self.embed_dims),
+        #     nn.ReLU(inplace=True), Linear(self.embed_dims, self.embed_dims))
 
         self.rel_query_update = nn.Identity()
 
@@ -284,26 +304,28 @@ class DeformableLGDFormerHead(AnchorFreeHead):
 
         self.swin = False
         if self.use_mask:
-            self.sub_bbox_attention = MHAttentionMap(self.embed_dims,
-                                                     self.embed_dims,
-                                                     self.n_heads,
-                                                     dropout=0.0)
-            self.obj_bbox_attention = MHAttentionMap(self.embed_dims,
-                                                     self.embed_dims,
-                                                     self.n_heads,
-                                                     dropout=0.0)
-            if not self.swin:
-                self.sub_mask_head = MaskHeadSmallConv(
-                    self.embed_dims + self.n_heads, [256, 256, 256],
-                    self.embed_dims)
-                self.obj_mask_head = MaskHeadSmallConv(
-                    self.embed_dims + self.n_heads, [256, 256, 256],
-                    self.embed_dims)
-            elif self.swin:
-                self.sub_mask_head = MaskHeadSmallConv(
-                    self.embed_dims + self.n_heads, self.swin, self.embed_dims)
-                self.obj_mask_head = MaskHeadSmallConv(
-                    self.embed_dims + self.n_heads, self.swin, self.embed_dims)
+            self.sub_mask_head = Linear(self.embed_dims, self.embed_dims)
+            self.obj_mask_head = Linear(self.embed_dims, self.embed_dims)
+            # self.sub_bbox_attention = MHAttentionMap(self.embed_dims,
+            #                                          self.embed_dims,
+            #                                          self.n_heads,
+            #                                          dropout=0.0)
+            # self.obj_bbox_attention = MHAttentionMap(self.embed_dims,
+            #                                          self.embed_dims,
+            #                                          self.n_heads,
+            #                                          dropout=0.0)
+            # if not self.swin:
+            #     self.sub_mask_head = MaskHeadSmallConv(
+            #         self.embed_dims + self.n_heads, [256, 256, 256],
+            #         self.embed_dims)
+            #     self.obj_mask_head = MaskHeadSmallConv(
+            #         self.embed_dims + self.n_heads, [256, 256, 256],
+            #         self.embed_dims)
+            # elif self.swin:
+            #     self.sub_mask_head = MaskHeadSmallConv(
+            #         self.embed_dims + self.n_heads, self.swin, self.embed_dims)
+            #     self.obj_mask_head = MaskHeadSmallConv(
+            #         self.embed_dims + self.n_heads, self.swin, self.embed_dims)
 
         # self.bbox_attention = MHAttentionMap(self.embed_dims,
         #                                      self.embed_dims,
@@ -379,7 +401,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         rel_hs, ext_inter_feats, rel_decoder_out_res = self.predicate_node_generator(
             last_features,
             masks,
-            self.rel_query_embed.weight,
+            None,
             pos_embed,
             None,
             memory,
@@ -426,24 +448,34 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         obj_outputs_coord_aux = self.obj_box_embed(outs_rel_dec_ent_aware_obj).sigmoid()
         if self.use_mask:
             ###########for segmentation#################
-            sub_bbox_mask = self.sub_bbox_attention(outs_rel_dec_ent_aware_sub[-1],
-                                                    memory,
-                                                    mask=masks)
-            obj_bbox_mask = self.obj_bbox_attention(outs_rel_dec_ent_aware_obj[-1],
-                                                    memory,
-                                                    mask=masks)
-            sub_seg_masks = self.sub_mask_head(last_features, sub_bbox_mask,
-                                               [feats[2], feats[1], feats[0]])
-            outputs_sub_seg_masks_aux = sub_seg_masks.view(batch_size,
-                                                       self.num_rel_query,
-                                                       sub_seg_masks.shape[-2],
-                                                       sub_seg_masks.shape[-1])
-            obj_seg_masks = self.obj_mask_head(last_features, obj_bbox_mask,
-                                               [feats[2], feats[1], feats[0]])
-            outputs_obj_seg_masks_aux = obj_seg_masks.view(batch_size,
-                                                       self.num_rel_query,
-                                                       obj_seg_masks.shape[-2],
-                                                       obj_seg_masks.shape[-1])
+            # sub_bbox_mask = self.sub_bbox_attention(outs_rel_dec_ent_aware_sub[-1],
+            #                                         memory,
+            #                                         mask=masks)
+            # obj_bbox_mask = self.obj_bbox_attention(outs_rel_dec_ent_aware_obj[-1],
+            #                                         memory,
+            #                                         mask=masks)
+            # sub_seg_masks = self.sub_mask_head(last_features, sub_bbox_mask,
+            #                                    [feats[2], feats[1], feats[0]])
+            # outputs_sub_seg_masks_aux = sub_seg_masks.view(batch_size,
+            #                                            self.num_rel_query,
+            #                                            sub_seg_masks.shape[-2],
+            #                                            sub_seg_masks.shape[-1])
+            # obj_seg_masks = self.obj_mask_head(last_features, obj_bbox_mask,
+            #                                    [feats[2], feats[1], feats[0]])
+            # outputs_obj_seg_masks_aux = obj_seg_masks.view(batch_size,
+            #                                            self.num_rel_query,
+            #                                            obj_seg_masks.shape[-2],
+            #                                            obj_seg_masks.shape[-1])
+            batch_4x_h, batch_4x_w = feats[0].shape[-2:]
+            img_feat = feats[0] + F.interpolate(enc_memory, size=(batch_4x_h, batch_4x_w))
+            sub_query_mask_embed = self.sub_mask_head(outs_rel_dec_ent_aware_sub[-1]) 
+            outputs_sub_seg_masks_aux = torch.einsum('bqc, bchw -> bqhw', sub_query_mask_embed, img_feat)
+
+            obj_query_mask_embed = self.obj_mask_head(outs_rel_dec_ent_aware_obj[-1]) 
+            outputs_obj_seg_masks_aux = torch.einsum('bqc, bchw -> bqhw', obj_query_mask_embed, img_feat)
+            # ### For debug TODO
+            # outputs_obj_seg_masks_aux = seg_masks[:,:self.num_rel_query]
+            # outputs_sub_seg_masks_aux = seg_masks[:,:self.num_rel_query]
 
         #### relation-oriented search
         # subject_scores = torch.matmul(
@@ -562,7 +594,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
 
         r_losses_cls, loss_subject_match, loss_object_match, \
         s_losses_cls, o_losses_cls, s_losses_bbox, o_losses_bbox, \
-        s_losses_iou, o_losses_iou, s_dice_losses, o_dice_losses= multi_apply(
+        s_losses_iou, o_losses_iou, s_dice_losses, o_dice_losses, s_mask_losses, o_mask_losses= multi_apply(
             self.loss_single, subject_scores, object_scores,
             all_od_cls_scores, all_od_bbox_preds, all_mask_preds,
             all_r_cls_scores, all_s_bbox_preds, all_o_bbox_preds,
@@ -571,6 +603,19 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             all_r_cls_scores_sub_aux, all_r_cls_scores_obj_aux, 
             all_s_bbox_preds_aux, all_o_bbox_preds_aux, all_s_mask_preds_aux, 
             all_o_mask_preds_aux,all_gt_bboxes_ignore_list,)
+
+        # r_losses_cls, loss_subject_match, loss_object_match, \
+        # s_losses_cls, o_losses_cls, s_losses_bbox, o_losses_bbox, \
+        # s_losses_iou, o_losses_iou, s_dice_losses, o_dice_losses = multi_apply(
+        #     self.loss_single, subject_scores, object_scores,
+        #     all_od_cls_scores, all_od_bbox_preds, all_mask_preds,
+        #     all_r_cls_scores, all_s_bbox_preds, all_o_bbox_preds,
+        #     all_gt_rels_list, all_gt_bboxes_list, all_gt_labels_list,
+        #     all_gt_masks_list, img_metas_list, 
+        #     all_r_cls_scores_sub_aux, all_r_cls_scores_obj_aux, 
+        #     all_s_bbox_preds_aux, all_o_bbox_preds_aux, all_s_mask_preds_aux, 
+        #     all_o_mask_preds_aux,all_gt_bboxes_ignore_list,)
+
 
         loss_dict = dict()
         ## loss of relation-oriented matching
@@ -610,6 +655,8 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             # loss_dict['o_focal_losses'] = o_focal_losses[-1]
             loss_dict['s_dice_losses'] = s_dice_losses[-1]
             loss_dict['o_dice_losses'] = o_dice_losses[-1]
+            loss_dict['s_mask_losses'] = s_mask_losses[-1]
+            loss_dict['o_mask_losses'] = o_mask_losses[-1]
 
         # loss from other decoder layers
         num_dec_layer = 0
@@ -693,6 +740,9 @@ class DeformableLGDFormerHead(AnchorFreeHead):
          o_label_weights_list, s_bbox_targets_list, o_bbox_targets_list, s_bbox_weights_list, o_bbox_weights_list,
          s_mask_targets_list, o_mask_targets_list, s_mask_preds_list, o_mask_preds_list) = cls_reg_targets
 
+        # Del unused tensor
+        # del labels_list, label_weights_list, bbox_targets_list, bbox_weights_list, mask_targets_list, num_total_od_pos, num_total_od_neg
+        # gc.collect() # too slow
         # obj det&seg # Do not need calculate loss here
         # labels = torch.cat(labels_list, 0)
         # label_weights = torch.cat(label_weights_list, 0)
@@ -801,20 +851,64 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             s_mask_preds = torch.cat(s_mask_preds_list, 0).flatten(1)
             o_mask_preds = torch.cat(o_mask_preds_list, 0).flatten(1)
             num_matches = o_mask_preds.shape[0]
+            num_total_masks = reduce_mean(r_cls_scores.new_tensor([num_total_pos]))
+            num_total_masks = max(num_total_masks, 1)
+            with torch.no_grad():
+                s_points_coords = get_uncertain_point_coords_with_randomness(
+                    s_mask_preds.reshape(torch.cat(s_mask_targets_list,0).shape).unsqueeze(1), None, self.num_points,
+                    self.oversample_ratio, self.importance_sample_ratio)
+                # shape (num_total_gts, h, w) -> (num_total_gts, num_points)
+                s_mask_point_targets = point_sample(
+                    s_mask_targets.reshape(torch.cat(s_mask_targets_list,0).shape).unsqueeze(1).float(), s_points_coords).squeeze(1)
 
+                o_points_coords = get_uncertain_point_coords_with_randomness(
+                    o_mask_preds.reshape(torch.cat(o_mask_targets_list,0).shape).unsqueeze(1), None, self.num_points,
+                    self.oversample_ratio, self.importance_sample_ratio)
+                # shape (num_total_gts, h, w) -> (num_total_gts, num_points)
+                o_mask_point_targets = point_sample(
+                    o_mask_targets.reshape(torch.cat(o_mask_targets_list,0).shape).unsqueeze(1).float(), o_points_coords).squeeze(1)
+
+            s_mask_point_preds = point_sample(
+                s_mask_preds.reshape(torch.cat(s_mask_targets_list,0).shape).unsqueeze(1), s_points_coords).squeeze(1)
+
+            o_mask_point_preds = point_sample(
+                o_mask_preds.reshape(torch.cat(o_mask_targets_list,0).shape).unsqueeze(1), o_points_coords).squeeze(1)
+
+            # dice loss
+            s_dice_loss = (self.sub_dice_loss(s_mask_point_preds, s_mask_point_targets, avg_factor=num_total_masks) / len(s_mask_preds_list)).squeeze()
+            o_dice_loss = (self.obj_dice_loss(o_mask_point_preds, o_mask_point_targets, avg_factor=num_total_masks) / len(o_mask_preds_list)).squeeze()
             # mask loss
-            # s_focal_loss = self.sub_focal_loss(s_mask_preds,s_mask_targets,num_matches)
-            s_dice_loss = self.sub_dice_loss(
-                s_mask_preds, s_mask_targets,
-                num_matches)
+            # shape (num_queries, num_points) -> (num_queries * num_points, )
+            s_mask_point_preds = s_mask_point_preds.reshape(-1)
+            # shape (num_total_gts, num_points) -> (num_total_gts * num_points, )
+            s_mask_point_targets = s_mask_point_targets.reshape(-1)
+            s_mask_loss = (self.sub_mask_loss(
+                s_mask_point_preds,
+                s_mask_point_targets,
+                avg_factor=num_total_masks * self.num_points) / len(s_mask_preds_list)).squeeze()
+            o_mask_point_preds = o_mask_point_preds.reshape(-1)
+            # shape (num_total_gts, num_points) -> (num_total_gts * num_points, )
+            o_mask_point_targets = o_mask_point_targets.reshape(-1)
+            o_mask_loss = (self.obj_mask_loss(
+                o_mask_point_preds,
+                o_mask_point_targets,
+                avg_factor=num_total_masks * self.num_points) / len(o_mask_preds_list)).squeeze()            
 
-            # o_focal_loss = self.obj_focal_loss(o_mask_preds,o_mask_targets,num_matches)
-            o_dice_loss = self.obj_dice_loss(
-                o_mask_preds, o_mask_targets,
-                num_matches) 
+            # # mask loss
+            # # s_focal_loss = self.sub_focal_loss(s_mask_preds,s_mask_targets,num_matches)
+            # s_dice_loss = self.sub_dice_loss(
+            #     s_mask_preds, s_mask_targets,
+            #     num_matches)
+
+            # # o_focal_loss = self.obj_focal_loss(o_mask_preds,o_mask_targets,num_matches)
+            # o_dice_loss = self.obj_dice_loss(
+            #     o_mask_preds, o_mask_targets,
+            #     num_matches) 
         else:
             s_dice_loss = None
             o_dice_loss = None
+            # s_mask_loss = None
+            # o_mask_loss = None
 
         # classification loss
         s_cls_scores = r_cls_scores_sub_aux.reshape(-1, self.sub_cls_out_channels)
@@ -891,7 +985,8 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                                          o_bbox_weights,
                                          avg_factor=num_total_pos)
 
-        return r_loss_cls, loss_subject_match, loss_object_match, s_loss_cls, o_loss_cls, s_loss_bbox, o_loss_bbox, s_loss_iou, o_loss_iou, s_dice_loss, o_dice_loss                               
+        return r_loss_cls, loss_subject_match, loss_object_match, s_loss_cls, o_loss_cls, s_loss_bbox, o_loss_bbox, s_loss_iou, o_loss_iou, s_dice_loss, o_dice_loss, s_mask_loss, o_mask_loss 
+        # return r_loss_cls, loss_subject_match, loss_object_match, s_loss_cls, o_loss_cls, s_loss_bbox, o_loss_bbox, s_loss_iou, o_loss_iou, s_dice_loss, o_dice_loss
         # return loss_cls, loss_bbox, loss_iou, dice_loss, focal_loss, r_loss_cls, loss_subject_match, loss_object_match, s_loss_cls, o_loss_cls, s_loss_bbox, o_loss_bbox, s_loss_iou, o_loss_iou, s_dice_loss, o_dice_loss
 
     def get_targets(self,
