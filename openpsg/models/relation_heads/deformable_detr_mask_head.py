@@ -176,7 +176,7 @@ class DeformableDETRMaskHead(DETRHead):
         if not self.as_two_stage or self.mixed_selection:
             query_embeds = self.query_embedding.weight
         hs, init_reference, inter_references, \
-            enc_outputs_class, enc_outputs_coord, enc_memory, enc_queries = self.transformer(
+            enc_outputs_class, enc_outputs_coord, enc_memory, enc_queries, mlvl_enc_memory = self.transformer(
                     mlvl_feats[1:],
                     [torch.zeros_like(mask) if self.no_attn_mask else mask for mask in mlvl_masks[1:]],
                     query_embeds,
@@ -228,7 +228,7 @@ class DeformableDETRMaskHead(DETRHead):
         if self.as_two_stage:
             return outputs_classes, outputs_coords, \
                 enc_outputs_class[:, :], \
-                enc_outputs_coord.sigmoid()[:, :], outputs_masks_list, None, hs, enc_memory.permute(0, 3, 1, 2)
+                enc_outputs_coord.sigmoid()[:, :], outputs_masks_list, None, hs, enc_memory.permute(0, 3, 1, 2), mlvl_enc_memory
         else:
             return outputs_classes, outputs_coords, \
                 None, None, outputs_masks_list
@@ -516,7 +516,8 @@ class DeformableDETRMaskHead(DETRHead):
         all_mask_preds,
         enc_mask_preds,
         entity_query_embedding, 
-        enc_memory) = self(feats, img_metas)
+        enc_memory,
+        mlvl_enc_memory) = self(feats, img_metas)
         mask_cls_results = all_cls_scores[-1]
         mask_pred_results = all_mask_preds[-1]
 
@@ -533,7 +534,7 @@ class DeformableDETRMaskHead(DETRHead):
         
         entity_all_cls_scores = dict(cls=all_cls_scores,)
 
-        return mask_cls_results, mask_pred_results, entity_query_embedding, enc_memory, entity_all_bbox_preds, entity_all_cls_scores
+        return mask_cls_results, mask_pred_results, entity_query_embedding, enc_memory, mlvl_enc_memory, entity_all_bbox_preds, entity_all_cls_scores
     
     def forward_train(self,
                       feats,
@@ -577,7 +578,7 @@ class DeformableDETRMaskHead(DETRHead):
         all_mask_preds,
         enc_mask_preds, 
         entity_query_embedding, 
-        enc_memory) = self(feats, img_metas)
+        enc_memory, mlvl_enc_memory) = self(feats, img_metas)
       
         # preprocess ground truth
         gt_labels, gt_masks = self.preprocess_gt(gt_labels, gt_masks,
@@ -605,7 +606,7 @@ class DeformableDETRMaskHead(DETRHead):
         
         entity_all_cls_scores = dict(cls=all_cls_scores,)
 
-        return losses, entity_query_embedding, enc_memory, entity_all_bbox_preds, entity_all_cls_scores
+        return losses, entity_query_embedding, enc_memory, mlvl_enc_memory, entity_all_bbox_preds, entity_all_cls_scores
     
     def preprocess_gt(self, gt_labels_list, gt_masks_list, gt_semantic_segs,
                       img_metas):

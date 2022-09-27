@@ -38,6 +38,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                  num_relations,
                  object_classes,
                  predicate_classes,
+                 num_feature_levels=4,
                  num_things_classes=200,
                  num_obj_query=100,
                  num_rel_query=100,
@@ -262,6 +263,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
 
         self.n_heads = n_heads
         self.embed_dims = self.predicate_node_generator.embed_dims
+        self.num_feature_levels = num_feature_levels
         assert 'num_feats' in positional_encoding
         num_feats = positional_encoding['num_feats']
         assert num_feats * 2 == self.embed_dims, 'embed_dims should' \
@@ -281,6 +283,11 @@ class DeformableLGDFormerHead(AnchorFreeHead):
 
         # self.class_embed = Linear(self.embed_dims, self.cls_out_channels)
         # self.box_embed = MLP(self.embed_dims, self.embed_dims, 4, 3)
+        if self.predicate_node_generator.encoder is not None:
+            self.level_embeds = nn.Parameter(
+                torch.Tensor(self.num_feature_levels, self.embed_dims))
+        else:
+            self.level_embeds = None
 
         self.sub_query_update = nn.Sequential(
             Linear(self.embed_dims, self.embed_dims), nn.ReLU(inplace=True),
@@ -363,7 +370,17 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                                           strict, missing_keys,
                                           unexpected_keys, error_msgs)
 
-    def forward(self, feats, img_metas, enc_memory, entity_query_embedding, entity_all_bbox_preds, entity_all_cls_scores, train_mode=False):
+    def get_valid_ratio(self, mask):
+        """Get the valid radios of feature maps of all  level."""
+        _, H, W = mask.shape
+        valid_H = torch.sum(~mask[:, :, 0], 1)
+        valid_W = torch.sum(~mask[:, 0, :], 1)
+        valid_ratio_h = valid_H.float() / H
+        valid_ratio_w = valid_W.float() / W
+        valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)
+        return valid_ratio
+
+    def forward(self, feats, img_metas, enc_memory, mlvl_enc_memory, entity_query_embedding, entity_all_bbox_preds, entity_all_cls_scores, train_mode=False):
         """
         input from panoptic head:
             memory: from deformable encoder
@@ -391,22 +408,72 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         pos_embed = self.positional_encoding(masks)  # [bs, embed_dim, h, w]
         # outs_dec: [nb_dec, bs, num_query, embed_dim]
         outs_obj_dec, memory \
-            = entity_query_embedding, enc_memory # (layer, b, num_query, c) and (b, h, w, c)
+            = entity_query_embedding, mlvl_enc_memory # (layer, b, num_query, c) and (b, h, w, c)
 
         outputs_coord = entity_all_bbox_preds['bbox']
         outputs_class = entity_all_cls_scores['cls']
         seg_masks = torch.stack(entity_all_bbox_preds['mask'][-1]) # compatible with vallina psgformer
 
         ### new interaction
+        mlvl_feats = feats
+        batch_size = mlvl_feats[0].size(0)
+        input_img_h, input_img_w = img_metas[0]['batch_input_shape']
+        img_masks = mlvl_feats[0].new_ones(
+            (batch_size, input_img_h, input_img_w))
+        for img_id in range(batch_size):
+            img_h, img_w, _ = img_metas[img_id]['img_shape']
+            img_masks[img_id, :img_h, :img_w] = 0
+
+        mlvl_masks = []
+        mlvl_positional_encodings = []
+        for feat in mlvl_feats:
+            mlvl_masks.append(
+                F.interpolate(img_masks[None], size=feat.shape[-2:]).to(torch.bool).squeeze(0))
+            mlvl_positional_encodings.append(
+                self.positional_encoding(mlvl_masks[-1]))
+        
+        feat_flatten = []
+        mask_flatten = []
+        lvl_pos_embed_flatten = []
+        spatial_shapes = []
+        for lvl, (feat, mask, pos_embed) in enumerate(
+                zip(mlvl_feats[1:], mlvl_masks[1:], mlvl_positional_encodings[1:])):
+            bs, c, h, w = feat.shape
+            spatial_shape = (h, w)
+            spatial_shapes.append(spatial_shape)
+            feat = feat.flatten(2).transpose(1, 2)
+            mask = mask.flatten(1)
+            pos_embed = pos_embed.flatten(2).transpose(1, 2)
+            if self.level_embeds is not None:
+                lvl_pos_embed = pos_embed + self.level_embeds[lvl].view(1, 1, -1)
+                lvl_pos_embed_flatten.append(lvl_pos_embed)
+            feat_flatten.append(feat)
+            mask_flatten.append(mask)
+        feat_flatten = torch.cat(feat_flatten, 1)
+        mask_flatten = torch.cat(mask_flatten, 1)
+        if self.level_embeds is not None:
+            lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
+        else:
+            lvl_pos_embed_flatten = None
+        spatial_shapes = torch.as_tensor(
+            spatial_shapes, dtype=torch.long, device=feat_flatten.device)
+        level_start_index = torch.cat((spatial_shapes.new_zeros(
+            (1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
+        valid_ratios = torch.stack(
+            [self.get_valid_ratio(m) for m in mlvl_masks[1:]], 1)
+
         rel_hs, ext_inter_feats, rel_decoder_out_res = self.predicate_node_generator(
-            last_features,
-            masks,
+            feat_flatten,
+            mask_flatten,
             None,
-            pos_embed,
+            lvl_pos_embed_flatten,
             None,
             memory,
             outs_obj_dec,
-            outputs_coord[-1]
+            outputs_coord[-1],
+            valid_ratios=valid_ratios,
+            spatial_shapes=spatial_shapes,
+            level_start_index=level_start_index,
         )
 
         outs_rel_dec = rel_hs.feature
@@ -1326,7 +1393,8 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                       img,
                       img_metas,
                       entity_query_embedding, 
-                      enc_memory, 
+                      enc_memory,
+                      mlvl_enc_memory,
                       entity_all_bbox_preds, 
                       entity_all_cls_scores,
                       gt_rels,
@@ -1356,7 +1424,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             dict[str, Tensor]: A dictionary of loss components.
         """
         assert proposal_cfg is None, '"proposal_cfg" must be None'
-        outs = self(x, img_metas, enc_memory, entity_query_embedding, entity_all_bbox_preds, entity_all_cls_scores)
+        outs = self(x, img_metas, enc_memory, mlvl_enc_memory, entity_query_embedding, entity_all_bbox_preds, entity_all_cls_scores)
         if gt_labels is None:
             loss_inputs = outs + (gt_rels, gt_bboxes, gt_masks, img_metas)
         else:
@@ -1687,9 +1755,9 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         else:
             return det_bboxes, labels, rel_pairs, r_scores, r_labels, r_dists
 
-    def simple_test_bboxes(self, feats, img_metas, entity_query_embedding, enc_memory, entity_all_bbox_preds, entity_all_cls_scores, rescale=False):
+    def simple_test_bboxes(self, feats, img_metas, entity_query_embedding, enc_memory, mlvl_enc_memory, entity_all_bbox_preds, entity_all_cls_scores, rescale=False):
         # forward of this head requires img_metas
-        outs = self.forward(feats, img_metas, enc_memory, entity_query_embedding, entity_all_bbox_preds, entity_all_cls_scores)
+        outs = self.forward(feats, img_metas, enc_memory, mlvl_enc_memory, entity_query_embedding, entity_all_bbox_preds, entity_all_cls_scores)
         results_list = self.get_bboxes(*outs, img_metas, rescale=rescale)
         return results_list
 

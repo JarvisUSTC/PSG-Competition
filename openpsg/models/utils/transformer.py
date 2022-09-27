@@ -1340,14 +1340,14 @@ class Hybrid_DeformableDetrTransformer(Transformer):
             if self.return_encoder:
                 return inter_states, init_reference_out,\
                     inter_references_out, enc_outputs_class,\
-                    enc_outputs_coord_unact, memory.permute(1, 0, 2)[:, :level_start_index[1]].reshape(bs, spatial_shapes[0,0], spatial_shapes[0,1], -1), output_memory
+                    enc_outputs_coord_unact, memory.permute(1, 0, 2)[:, :level_start_index[1]].reshape(bs, spatial_shapes[0,0], spatial_shapes[0,1], -1), output_memory, memory
             else:
                 return inter_states, init_reference_out,\
                     inter_references_out, enc_outputs_class,\
                     enc_outputs_coord_unact
         elif self.return_encoder:   
             return inter_states, init_reference_out, \
-                inter_references_out, None, None, memory.permute(1, 0, 2)[:, :level_start_index[1]].reshape(bs, spatial_shapes[0,0], spatial_shapes[0,1], -1), None
+                inter_references_out, None, None, memory.permute(1, 0, 2)[:, :level_start_index[1]].reshape(bs, spatial_shapes[0,0], spatial_shapes[0,1], -1), None, memory
         else:
             return inter_states, init_reference_out, \
                 inter_references_out, None, None

@@ -143,12 +143,12 @@ class DeformablePSGTr(SingleStageDetector):
                 new_gt_masks.append(mask)
 
             gt_masks_rel_head = new_gt_masks
-        losses_panoptic_head, entity_query_embedding, enc_memory, entity_all_bbox_preds, entity_all_cls_scores = self.panoptic_head.forward_train(x, img_metas, gt_bboxes,
+        losses_panoptic_head, entity_query_embedding, enc_memory, mlvl_enc_memory, entity_all_bbox_preds, entity_all_cls_scores = self.panoptic_head.forward_train(x, img_metas, gt_bboxes,
                                             gt_labels, gt_masks,
                                             gt_semantic_seg,
                                             gt_bboxes_ignore)
         losses = dict()
-        losses = self.bbox_head.forward_train(x, img, img_metas, entity_query_embedding, enc_memory, 
+        losses = self.bbox_head.forward_train(x, img, img_metas, entity_query_embedding, enc_memory, mlvl_enc_memory,
                                               entity_all_bbox_preds, entity_all_cls_scores, gt_rels, gt_bboxes,
                                               gt_labels, gt_masks_rel_head, gt_semantic_seg,
                                               gt_bboxes_ignore)
@@ -158,13 +158,14 @@ class DeformablePSGTr(SingleStageDetector):
     def simple_test(self, img, img_metas, rescale=False):
 
         feat = self.extract_feat(img)
-        mask_cls_results, mask_pred_results, entity_query_embedding, enc_memory, entity_all_bbox_preds, entity_all_cls_scores = self.panoptic_head.simple_test(
+        mask_cls_results, mask_pred_results, entity_query_embedding, enc_memory, mlvl_enc_memory, entity_all_bbox_preds, entity_all_cls_scores = self.panoptic_head.simple_test(
             feat, img_metas
         )
         results_list = self.bbox_head.simple_test_bboxes(feat,
                                                   img_metas,
                                                   entity_query_embedding, 
-                                                  enc_memory, 
+                                                  enc_memory,
+                                                  mlvl_enc_memory,
                                                   entity_all_bbox_preds, 
                                                   entity_all_cls_scores,
                                                   rescale=rescale)
