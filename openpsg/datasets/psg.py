@@ -323,6 +323,8 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
             else:
                 raise ValueError('Unknown metric {}.'.format(m))
 
+        eval_results = {}
+
         if len(od_metrics) > 0:
             # invoke object detection evaluation.
             # Temporarily for bbox
@@ -331,14 +333,15 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
                 od_results = results
             else:
                 od_results = [{'pan_results': r.pan_results} for r in results]
-            return super().evaluate(
+            eval_results.update(super().evaluate(
                 od_results,
-                metric,
+                # metric,
+                od_metrics,
                 logger,
                 jsonfile_prefix,
                 classwise=classwise,
                 **kwargs,
-            )
+            ))
 
         if len(sg_metrics) > 0:
             """Invoke scene graph evaluation.
@@ -389,7 +392,7 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
                 print('\n')
                 self.test_gt_results = gt_results
 
-            return sgg_evaluation(
+            eval_results.update(sgg_evaluation(
                 sg_metrics,
                 groundtruths=self.test_gt_results,
                 predictions=results,
@@ -400,7 +403,9 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
                 # predicate_freq=self.predicate_freq,
                 nogc_thres_num=nogc_thres_num,
                 detection_method=detection_method,
-            )
+            ))
+
+        return eval_results
 
     def get_statistics(self):
         freq_matrix = self.get_freq_matrix()

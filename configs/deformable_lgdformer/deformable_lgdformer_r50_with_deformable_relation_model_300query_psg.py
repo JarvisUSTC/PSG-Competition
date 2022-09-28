@@ -145,32 +145,12 @@ model = dict(
         num_relations=len(predicate_classes),
         object_classes=object_classes,
         predicate_classes=predicate_classes,
-        num_obj_query=100, # for compatible
-        num_rel_query=100,
+        num_obj_query=300, # for compatible
+        num_rel_query=300,
         predicate_node_generator=dict(
-            num_rel_query=100,
+            num_rel_query=300,
             num_classes=len(object_classes),
             rel_encoder=None, # Shared encoder memory to save memory
-            entities_enhance_decoder=dict(
-                type='DeformableDetrTransformerDecoder',
-                num_layers=3,
-                return_intermediate=True,
-                transformerlayers=dict(
-                    type='DetrTransformerDecoderLayer',
-                    attn_cfgs=[
-                        dict(
-                            type='MultiheadAttention',
-                            embed_dims=256,
-                            num_heads=8,
-                            dropout=0.1),
-                        dict(
-                            type='MultiScaleDeformableAttention',
-                            embed_dims=256)
-                    ],
-                    feedforward_channels=2048,
-                    ffn_dropout=0.1,
-                    operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
-                                     'ffn', 'norm'))),
         ),
         sub_mask_loss=dict(loss_weight=2.0),
         sub_dice_loss=dict(loss_weight=2.0),
@@ -252,7 +232,6 @@ test_pipeline = [
 
 evaluation = dict(
     interval=1,
-    # metric='sgdet',
     metric=['sgdet','PQ'],
     relation_mode=True,
     classwise=True,
@@ -284,7 +263,7 @@ lr_config = dict(policy='step', step=15)
 runner = dict(type='EpochBasedRunner', max_epochs=20)
 
 project_name = 'deformable_lgdformer'
-expt_name = 'deformable_lgdformer_r50_psg_with_deformable_rel_model_with_deformable_ent_enhance'
+expt_name = 'deformable_lgdformer_r50_psg_with_deformable_rel_model_300'
 entity = 'psgyyds'
 work_dir = f'./work_dirs/{expt_name}'
 checkpoint_config = dict(interval=1, max_keep_ckpts=15)
