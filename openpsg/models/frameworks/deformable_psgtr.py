@@ -29,6 +29,8 @@ def triplet2Result(triplets, use_mask, eval_pan_rels=True):
             r_dists = r_dists.detach().cpu().numpy()
         if isinstance(pan_seg, torch.Tensor):
             pan_seg = pan_seg.detach().cpu().numpy()
+            
+        if isinstance(pan_rel_pairs, torch.Tensor):
             pan_rel_pairs = pan_rel_pairs.detach().cpu().numpy()
             masks = masks.detach().cpu().numpy()
             pan_masks = pan_masks.detach().cpu().numpy()
@@ -78,6 +80,7 @@ class DeformablePSGTr(SingleStageDetector):
                  neck=None,
                  bbox_head=None, # For relation
                  panoptic_head=None,
+                 panoptic_fusion_head=None,
                  train_cfg=None,
                  test_cfg=None,
                  pretrained=None,
@@ -93,6 +96,11 @@ class DeformablePSGTr(SingleStageDetector):
         panoptic_head_.update(train_cfg=train_cfg)
         panoptic_head_.update(test_cfg=test_cfg)
         self.panoptic_head = build_head(panoptic_head_)
+
+        panoptic_fusion_head_ = panoptic_fusion_head.deepcopy()
+        panoptic_fusion_head_.update(test_cfg=test_cfg)
+        self.panoptic_fusion_head = build_head(panoptic_fusion_head_)
+
         self.num_things_classes = self.panoptic_head.num_things_classes
         self.num_stuff_classes = self.panoptic_head.num_stuff_classes
         self.num_classes = self.panoptic_head.num_classes
@@ -132,15 +140,11 @@ class DeformablePSGTr(SingleStageDetector):
         if self.bbox_head.use_mask:
             BS, C, H, W = img.shape
             new_gt_masks = []
-            for each in gt_masks:
-                mask = torch.tensor(each.to_ndarray(), device=x[0].device)
-                _, h, w = mask.shape
-                padding = (0, W - w, 0, H - h)
-                mask = F.interpolate(F.pad(mask, padding).unsqueeze(1),
-                                     size=(H // 2, W // 2),
-                                     mode='nearest').squeeze(1)
-                # mask = F.pad(mask, padding)
+            for b, each in enumerate(gt_masks):
+                mask = each.pad(img_metas[b]['pad_shape'][:2], pad_val=0)\
+                    .to_tensor(dtype=torch.bool, device=gt_labels[b].device)
                 new_gt_masks.append(mask)
+            # Keep same as mask head
 
             gt_masks_rel_head = new_gt_masks
         losses_panoptic_head, entity_query_embedding, enc_memory, mlvl_enc_memory, entity_all_bbox_preds, entity_all_cls_scores = self.panoptic_head.forward_train(x, img_metas, gt_bboxes,
@@ -161,6 +165,8 @@ class DeformablePSGTr(SingleStageDetector):
         mask_cls_results, mask_pred_results, entity_query_embedding, enc_memory, mlvl_enc_memory, entity_all_bbox_preds, entity_all_cls_scores = self.panoptic_head.simple_test(
             feat, img_metas
         )
+        pan_results_list = self.panoptic_fusion_head.simple_test(mask_cls_results, mask_pred_results, img_metas, rescale=rescale)
+        
         results_list = self.bbox_head.simple_test_bboxes(feat,
                                                   img_metas,
                                                   entity_query_embedding, 
@@ -169,6 +175,18 @@ class DeformablePSGTr(SingleStageDetector):
                                                   entity_all_bbox_preds, 
                                                   entity_all_cls_scores,
                                                   rescale=rescale)
+        if self.bbox_head.use_mask:
+            results_list_tmp = []
+            for batch_idx, results in enumerate(results_list):
+                results_list_tmp.append(list(results))
+                pan_seg, pan_masks, pan_labels, _, qis = pan_results_list[batch_idx]['pan_results']
+                # if len(pan_labels) <= 1: # detect 0 or 1 entity
+                #     pan_labels = [0]
+                #     pan_masks = [np.ones((1, pan_seg.shape[0], pan_seg.shape[1])).astype(bool)]
+                #   bboxes, labels, rel_pairs, masks, pan_rel_pairs, pan_seg, complete_r_labels, complete_r_dists, \
+                #   r_labels, r_dists, pan_masks, rels, pan_labels \
+                results_list_tmp[-1][5] = pan_results_list[batch_idx]['pan_results'][0]
+            results_list = results_list_tmp
         sg_results = [
             triplet2Result(triplets, self.bbox_head.use_mask)
             for triplets in results_list

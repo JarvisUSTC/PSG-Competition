@@ -94,7 +94,7 @@ class PanopticSceneGraphDataset(CocoPanopticDataset):
                 d for d in dataset['data']
                 if d['image_id'] in dataset['test_image_ids']
             ]
-            # self.data = self.data[:1000] # for quick debug
+            self.data = self.data[:10] # for quick debug
         # Init image infos
         self.data_infos = []
         for d in self.data:

@@ -159,7 +159,9 @@ class Deformable_Predicate_Node_Generator(BaseModule):
         else:
             self.intra_self_attention = None
 
-        self.rel_reference_points = nn.Linear(self.embed_dims, 2)
+        self.rel_sub_obj_box_embed = Linear(self.embed_dims, 4) # Predict the union box
+        self.rel_reference_points = _get_clones(self.rel_sub_obj_box_embed, self.num_decoder_layer + 1)
+        del self.rel_sub_obj_box_embed
 
     def forward(
         self,
@@ -208,6 +210,10 @@ class Deformable_Predicate_Node_Generator(BaseModule):
 
         (rel_tgt, ent_obj_tgt, ent_sub_tgt) = self.reset_tgt()
 
+        rel_feat_all = [rel_tgt]
+        ent_aware_rel_hs_sub = [ent_sub_tgt]
+        ent_aware_rel_hs_obj = [ent_obj_tgt]
+
         # outputs placeholder & container
         intermediate = []
         inter_rel_hs = []
@@ -242,8 +248,14 @@ class Deformable_Predicate_Node_Generator(BaseModule):
                 # reference_points: predicate from query_pos
                 # spatial_shapes, level_start_index, valid_ratios: from mask deformable detr head
                 # reg_branches: None
-                rel_reference_points = self.rel_reference_points(rel_tgt).sigmoid().permute(1,0,2) # rel_tgt include prior information
-                reference_points_input = rel_reference_points[:, :, None] * valid_ratios[:, None]
+
+                # Predict the union box of object and subject
+                if self.rel_reference_points is not None:
+                    rel_reference_points = self.rel_reference_points[idx](rel_tgt).sigmoid().permute(1,0,2) # rel_tgt include prior information
+                    if rel_reference_points.shape[-1] == 4:
+                        reference_points_input = rel_reference_points[:, :, None] * torch.cat([valid_ratios,valid_ratios],-1)[:, None]
+                    else:
+                        reference_points_input = rel_reference_points[:, :, None] * valid_ratios[:, None]
                 predicate_sub_dec_output_dict = self.predicate_sub_decoder_layers[idx](
                     query=rel_tgt,
                     key=None,
@@ -282,10 +294,6 @@ class Deformable_Predicate_Node_Generator(BaseModule):
                 output_dict.update(ent_sub_dec_outputs)
                 # only return needed intermediate hs
                 intermediate.append(output_dict)
-
-        rel_feat_all = []
-        ent_aware_rel_hs_sub = []
-        ent_aware_rel_hs_obj = []
 
         for outs in intermediate:
             if "ent_aug_rel_hs" in outs.keys():
@@ -402,15 +410,22 @@ class Deformable_Predicate_Node_Generator(BaseModule):
 
         return query_embed_obj_init, query_embed_sub_init, query_embed_rel_init
 
-    def dynamic_predicate_query_generation(self, query_embed, ent_hs, ent_coords, rel_q_gen=None):
-        ent_coords_embd = self.ent_pos_sine_proj(
-            gen_sineembed_for_position(ent_coords[..., :2], self.embed_dims // 2)
-        ).contiguous()
-        ent_hs = ent_hs[-1].transpose(1, 0)
-        ent_coords_embd = ent_coords_embd.transpose(1, 0)
-        if rel_q_gen is None:
-            rel_q_gen = self.rel_q_gen
-        query_embed = rel_q_gen(query_embed, ent_hs + ent_coords_embd, ent_hs + ent_coords_embd)[0]
+    def dynamic_predicate_query_generation(self, query_embed, ent_hs, ent_coords=None, rel_q_gen=None):
+        if ent_coords is not None:
+            ent_coords_embd = self.ent_pos_sine_proj(
+                gen_sineembed_for_position(ent_coords[..., :2], self.embed_dims // 2)
+            ).contiguous()
+            ent_hs = ent_hs[-1].transpose(1, 0)
+            ent_coords_embd = ent_coords_embd.transpose(1, 0)
+            if rel_q_gen is None:
+                rel_q_gen = self.rel_q_gen
+            query_embed = rel_q_gen(query_embed, ent_hs + ent_coords_embd, ent_hs + ent_coords_embd)[0]
+        else:
+            # The box of Stuff will confuse the query feature
+            ent_hs = ent_hs[-1].transpose(1, 0)
+            if rel_q_gen is None:
+                rel_q_gen = self.rel_q_gen
+            query_embed = rel_q_gen(query_embed, ent_hs, ent_hs)[0]
         query_embed = self.split_query(query_embed)
 
         return query_embed  # seq_len, bz, dim
@@ -476,7 +491,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
             )):
                 # seq_len, bs, dim = rel_hs_out.shape
                 # self.debug_print('ent_dec_layers id' + str(layeri))
-                ent_sub_reference_points = self.ent_sub_reference_points(ent_sub_tgt).sigmoid() # rel_tgt include prior information
+                ent_sub_reference_points = self.ent_sub_reference_points(query_pos_embed_sub).sigmoid() # rel_tgt include prior information
                 reference_points_input = ent_sub_reference_points[:, :, None] * valid_ratios[:, None]
                 ent_sub_output_dict_enh = enhance_ent_dec_layer_sub(
                     query=ent_sub_tgt,
@@ -489,7 +504,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
                     level_start_index=level_start_index,
                 )
 
-                ent_obj_reference_points = self.ent_obj_reference_points(ent_obj_tgt).sigmoid() # rel_tgt include prior information
+                ent_obj_reference_points = self.ent_obj_reference_points(query_pos_embed_obj).sigmoid() # rel_tgt include prior information
                 reference_points_input = ent_obj_reference_points[:, :, None] * valid_ratios[:, None]
                 ent_obj_output_dict_enh = enhance_ent_dec_layer_obj(
                     query=ent_obj_tgt,

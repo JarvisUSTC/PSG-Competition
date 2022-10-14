@@ -430,10 +430,12 @@ class IdMatcher(BaseAssigner):
     def __init__(self,
                  sub_id_cost=dict(type='ClassificationCost', weight=1.),
                  obj_id_cost=dict(type='ClassificationCost', weight=1.),
-                 r_cls_cost=dict(type='ClassificationCost', weight=1.)):
+                 r_cls_cost=dict(type='ClassificationCost', weight=1.),
+                 r_cls_use_sigmoid=False):
         self.sub_id_cost = build_match_cost(sub_id_cost)
         self.obj_id_cost = build_match_cost(obj_id_cost)
         self.r_cls_cost = build_match_cost(r_cls_cost)
+        self.r_cls_use_sigmoid = r_cls_use_sigmoid
 
     def assign(self,
                sub_match_score,
@@ -481,6 +483,8 @@ class IdMatcher(BaseAssigner):
         # classification and bboxcost.
         sub_id_cost = self.sub_id_cost(sub_match_score, gt_sub_ids)
         obj_id_cost = self.obj_id_cost(obj_match_score, gt_obj_ids)
+        if self.r_cls_use_sigmoid:
+            gt_rel_labels = gt_rel_labels - 1
         r_cls_cost = self.r_cls_cost(rel_cls_score, gt_rel_labels)
 
         # weighted sum of above three costs
