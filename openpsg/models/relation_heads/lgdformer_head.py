@@ -1412,6 +1412,9 @@ class LGDFormerHead(AnchorFreeHead):
                 tmp[id] = True
             keep = keep & tmp
 
+            keep_for_pan_seg = (all_labels != self.num_classes) & (all_scores >= 0.85)
+            all_labels_for_pan_seg = all_labels[keep_for_pan_seg]
+            all_masks_for_pan_seg = all_masks[keep_for_pan_seg]
             all_labels = all_labels[keep]
             all_masks = all_masks[keep]
             all_scores = all_scores[keep]
@@ -1470,6 +1473,80 @@ class LGDFormerHead(AnchorFreeHead):
                     else:
                         thing_dedup[thing_pred_ids[0]].append(thing_pred_ids[0])
 
+                all_masks_for_pan_seg = all_masks_for_pan_seg.flatten(1)
+                stuff_equiv_classes_for_pan_seg = defaultdict(lambda: [])
+                thing_classes_for_pan_seg = defaultdict(lambda: [])
+                thing_dedup_for_pan_seg = defaultdict(lambda: [])
+                for k, label in enumerate(all_labels_for_pan_seg):
+                    if label.item() >= 80:
+                        stuff_equiv_classes_for_pan_seg[label.item()].append(k)
+                    else:
+                        thing_classes_for_pan_seg[label.item()].append(k)
+                
+                def dedup_things_for_pan_seg(pred_ids, binary_masks):
+                    while len(pred_ids) > 1:
+                        base_mask = binary_masks[pred_ids[0]].unsqueeze(0)
+                        other_masks = binary_masks[pred_ids[1:]]
+                        # calculate ious
+                        ious = base_mask.mm(other_masks.transpose(0,1))/((base_mask+other_masks)>0).sum(-1)
+                        ids_left = []
+                        thing_dedup_for_pan_seg[pred_ids[0]].append(pred_ids[0])
+                        for iou, other_id in zip(ious[0],pred_ids[1:]):
+                            if iou>0.5:
+                                thing_dedup_for_pan_seg[pred_ids[0]].append(other_id)
+                            else:
+                                ids_left.append(other_id)
+                        pred_ids = ids_left
+                    if len(pred_ids) == 1:
+                        thing_dedup_for_pan_seg[pred_ids[0]].append(pred_ids[0])
+                
+                all_binary_masks_for_pan_seg = (torch.sigmoid(all_masks_for_pan_seg) > 0.85).to(torch.float)
+                # create dict that groups duplicate masks
+                for thing_pred_ids in thing_classes_for_pan_seg.values():
+                    if len(thing_pred_ids) > 1:
+                      dedup_things_for_pan_seg(thing_pred_ids, all_binary_masks_for_pan_seg)
+                    else:
+                        thing_dedup_for_pan_seg[thing_pred_ids[0]].append(thing_pred_ids[0])
+
+                def get_pan_seg_without_filter(all_masks, dedup=False):
+                    # This helper function creates the final panoptic segmentation image
+                    m_id = all_masks.transpose(0, 1).softmax(-1)
+
+                    if m_id.shape[-1] == 0:
+                        # We didn't detect any mask :(
+                        m_id = torch.zeros((h, w),
+                                           dtype=torch.long,
+                                           device=m_id.device)
+                    else:
+                        m_id = m_id.argmax(-1).view(h, w)
+                    
+                    if dedup:
+                        # Merge the masks corresponding to the same stuff class
+                        for equiv in stuff_equiv_classes_for_pan_seg.values():
+                            if len(equiv) > 1:
+                                for eq_id in equiv:
+                                    m_id.masked_fill_(m_id.eq(eq_id), equiv[0])
+
+                        # Merge the masks corresponding to the same thing instance
+                        for equiv in thing_dedup_for_pan_seg.values():
+                            if len(equiv) > 1:
+                                for eq_id in equiv:
+                                    m_id.masked_fill_(m_id.eq(eq_id), equiv[0])
+                    
+                    m_ids_remain,_ = m_id.unique().sort()
+
+                    pan_labels = [] 
+                    for i, m_id_remain in enumerate(m_ids_remain):
+                        pan_labels.append(all_labels_for_pan_seg[m_id_remain].unsqueeze(0))
+                        m_id.masked_fill_(m_id.eq(m_id_remain), i)
+                    pan_labels = torch.cat(pan_labels, 0)
+
+                    seg_img = m_id * INSTANCE_OFFSET + pan_labels[m_id]
+                    seg_img = seg_img.view(h, w).cpu().to(torch.long)
+                    m_id = m_id.view(h, w).cpu()
+                    
+                    return seg_img
+
                 def get_ids_area(all_masks, pan_rel_pairs, r_labels, r_dists, dedup=False):
                     # This helper function creates the final panoptic segmentation image
                     # It also returns the area of the masks that appears on the image
@@ -1525,6 +1602,8 @@ class LGDFormerHead(AnchorFreeHead):
 
                 area, pan_img, pan_rel_pairs, pan_masks, r_labels, r_dists, pan_labels = \
                     get_ids_area(all_masks, pan_rel_pairs, r_labels, r_dists, dedup=True)
+                
+                pan_img = get_pan_seg_without_filter(all_masks_for_pan_seg, dedup=True)
 
                 if r_labels.numel() == 0:
                     rels = torch.tensor([0,0,0]).view(-1,3)
