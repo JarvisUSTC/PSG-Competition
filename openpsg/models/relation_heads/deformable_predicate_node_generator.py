@@ -73,6 +73,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
         entities_enhance_decoder = None,
         intra_self_attention = None,
         update_query_by_rel_hs=False,
+        no_coords_prior = False,
         init_cfg = None,
     ):
         super(Deformable_Predicate_Node_Generator, self).__init__(init_cfg=init_cfg)
@@ -101,7 +102,9 @@ class Deformable_Predicate_Node_Generator(BaseModule):
         # self.coord_points_embed = nn.Sequential(nn.Linear(4, self.embed_dims)) # Do not use it....
         self.num_classes = num_classes
         # self.logits_embed = nn.Linear(self.num_classes + 1, self.embed_dims)
-        self.ent_pos_sine_proj = nn.Linear(self.embed_dims, self.embed_dims)
+        self.no_coords_prior = no_coords_prior
+        if not self.no_coords_prior:
+            self.ent_pos_sine_proj = nn.Linear(self.embed_dims, self.embed_dims)
         self.split_query = nn.Sequential(nn.ReLU(True), nn.Linear(self.embed_dims, self.embed_dims * 3))
 
         # Entity aware decoder
@@ -160,7 +163,8 @@ class Deformable_Predicate_Node_Generator(BaseModule):
             self.intra_self_attention = None
 
         self.rel_sub_obj_box_embed = Linear(self.embed_dims, 4) # Predict the union box
-        self.rel_reference_points = _get_clones(self.rel_sub_obj_box_embed, self.num_decoder_layer + 1)
+        self.rel_reference_points = _get_clones(self.rel_sub_obj_box_embed, self.num_decoder_layer)
+        self.rel_reference_points_proposal = Linear(self.embed_dims, 2)
         del self.rel_sub_obj_box_embed
 
     def forward(
@@ -210,9 +214,9 @@ class Deformable_Predicate_Node_Generator(BaseModule):
 
         (rel_tgt, ent_obj_tgt, ent_sub_tgt) = self.reset_tgt()
 
-        rel_feat_all = [rel_tgt]
-        ent_aware_rel_hs_sub = [ent_sub_tgt]
-        ent_aware_rel_hs_obj = [ent_obj_tgt]
+        rel_feat_all = []
+        ent_aware_rel_hs_sub = []
+        ent_aware_rel_hs_obj = []
 
         # outputs placeholder & container
         intermediate = []
@@ -249,13 +253,17 @@ class Deformable_Predicate_Node_Generator(BaseModule):
                 # spatial_shapes, level_start_index, valid_ratios: from mask deformable detr head
                 # reg_branches: None
 
+                if idx == 0:
+                    rel_reference_points = self.rel_reference_points_proposal(rel_tgt).sigmoid().permute(1,0,2).contiguous()
                 # Predict the union box of object and subject
-                if self.rel_reference_points is not None:
-                    rel_reference_points = self.rel_reference_points[idx](rel_tgt).sigmoid().permute(1,0,2) # rel_tgt include prior information
-                    if rel_reference_points.shape[-1] == 4:
-                        reference_points_input = rel_reference_points[:, :, None] * torch.cat([valid_ratios,valid_ratios],-1)[:, None]
-                    else:
-                        reference_points_input = rel_reference_points[:, :, None] * valid_ratios[:, None]
+                elif self.rel_reference_points is not None:
+                    rel_reference_points = self.rel_reference_points[idx](rel_tgt).sigmoid().permute(1,0,2).contiguous() # rel_tgt include prior information
+                else:
+                    raise NotImplementedError
+                if rel_reference_points.shape[-1] == 4:
+                    reference_points_input = rel_reference_points[:, :, None] * torch.cat([valid_ratios,valid_ratios],-1)[:, None]
+                else:
+                    reference_points_input = rel_reference_points[:, :, None] * valid_ratios[:, None]
                 predicate_sub_dec_output_dict = self.predicate_sub_decoder_layers[idx](
                     query=rel_tgt,
                     key=None,

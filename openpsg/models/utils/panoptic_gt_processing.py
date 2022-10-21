@@ -38,7 +38,7 @@ def preprocess_panoptic_gt(gt_labels, gt_masks, gt_semantic_seg, num_things,
         masks = things_masks.long()
         return gt_labels, masks
 
-    things_labels = gt_labels
+    things_labels = gt_labels[:len(things_masks)]
     gt_semantic_seg = gt_semantic_seg.squeeze(0)
 
     semantic_labels = torch.unique(
@@ -46,13 +46,16 @@ def preprocess_panoptic_gt(gt_labels, gt_masks, gt_semantic_seg, num_things,
         sorted=False,
         return_inverse=False,
         return_counts=False)
+    semantic_labels = gt_labels[len(things_masks):] # for psg dataset
     stuff_masks_list = []
     stuff_labels_list = []
     for label in semantic_labels:
         if label < num_things or label >= num_classes:
             continue
         stuff_mask = gt_semantic_seg == label
-        stuff_masks_list.append(stuff_mask)
+        # stuff_masks_list.append(stuff_mask)
+        # NOTE: to support bs>1        
+        stuff_masks_list.append(stuff_mask[:img_metas['img_shape'][0], :img_metas['img_shape'][1]])
         stuff_labels_list.append(label)
 
     if len(stuff_masks_list) > 0:

@@ -139,10 +139,10 @@ class LoadPanopticSceneGraphAnnotations(LoadPanopticAnnotations):
             mask = (pan_png == mask_info['id'])
             gt_seg = np.where(mask, mask_info['category'], gt_seg)
 
-            # # The legal thing masks
-            # if mask_info.get('is_thing'):
-            #     gt_masks.append(mask.astype(np.uint8))
-            gt_masks.append(mask.astype(np.uint8))  # get all masks
+            # The legal thing masks
+            if mask_info.get('is_thing'):
+                gt_masks.append(mask.astype(np.uint8))
+            # gt_masks.append(mask.astype(np.uint8))  # get all masks
 
         if self.with_mask:
             h, w = results['img_info']['height'], results['img_info']['width']

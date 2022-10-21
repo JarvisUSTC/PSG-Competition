@@ -73,7 +73,7 @@ class RelRandomCrop(RandomCrop):
             mask_key = self.bbox2mask.get(key)
             if mask_key in results:
                 results[mask_key] = results[mask_key][
-                    valid_inds.nonzero()[0]].crop(
+                    valid_inds[:len(results[mask_key])].nonzero()[0]].crop(
                         np.asarray([crop_x1, crop_y1, crop_x2, crop_y2]))
                 if self.recompute_bbox:
                     results[key] = results[mask_key].get_bboxes()
