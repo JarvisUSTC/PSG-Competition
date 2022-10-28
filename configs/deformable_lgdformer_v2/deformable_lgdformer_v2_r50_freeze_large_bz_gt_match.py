@@ -107,7 +107,11 @@ predicate_classes = [
 ]
 
 model = dict(
+    neck_freeze=True,
+    backbone=dict(frozen_stages=4,),
     panoptic_head=dict(
+        topk_for_relation=-1,
+        freeze=True,
         num_query=300,
         as_two_stage=True, 
         use_stuff_box=True,
@@ -154,12 +158,12 @@ model = dict(
             num_classes=len(object_classes),
             rel_encoder=None, # Shared encoder memory to save memory
             rel_decoder=dict(
-                num_layers=6,
+                num_layers=3,
             ),
             entities_aware_decoder=dict(
-                num_layers=6
+                num_layers=3
             ),
-            no_coords_prior=True,
+            no_coords_prior=False,
         ),
         box_assigner=dict(
             mask_cost=dict(weight=2.0), 
@@ -168,6 +172,7 @@ model = dict(
         sub_dice_loss=dict(loss_weight=2.0),
         obj_mask_loss=dict(loss_weight=2.0),
         obj_dice_loss=dict(loss_weight=2.0),
+        rel_loss_cls=dict(class_weight=1.0),
 ), )
 
 img_norm_cfg = dict(mean=[123.675, 116.28, 103.53],
@@ -251,11 +256,12 @@ evaluation = dict(
     detection_method='pan_seg',
 )
 
-data = dict(samples_per_gpu=1,
-            workers_per_gpu=2,
+data = dict(samples_per_gpu=10,
+            workers_per_gpu=4,
             train=dict(pipeline=train_pipeline),
             val=dict(pipeline=test_pipeline),
-            test=dict(pipeline=test_pipeline))
+            test=dict(pipeline=test_pipeline),
+            train_dataloader=dict(pin_memory=True),)
 # optimizer
 optimizer = dict(
     type='AdamW',
@@ -263,22 +269,22 @@ optimizer = dict(
     weight_decay=0.0001,
     paramwise_cfg=dict(
         custom_keys={
-            'backbone': dict(lr_mult=0.0, decay_mult=1.0),
-            'neck': dict(lr_mult=0.0, decay_mult=1.0),
-            'panoptic_head': dict(lr_mult=0.0, decay_mult=1.0),
+            'backbone': dict(lr_mult=0.1, decay_mult=1.0),
+            'neck': dict(lr_mult=0.1, decay_mult=1.0),
+            'panoptic_head': dict(lr_mult=0.1, decay_mult=1.0),
         }))
 
 optimizer_config = dict(grad_clip=dict(max_norm=0.01, norm_type=2))
 
 # learning policy
-lr_config = dict(policy='step', step=15)
-runner = dict(type='EpochBasedRunner', max_epochs=20)
+lr_config = dict(policy='step', step=10)
+runner = dict(type='EpochBasedRunner', max_epochs=12)
 
 project_name = 'deformable_lgdformer_v2'
-expt_name = 'deformable_lgdformer_v2_r50_fix_panoptic'
+expt_name = 'deformable_lgdformer_v2_r50_freeze_bz_10_gt_match'
 entity = 'psgyyds'
 work_dir = f'./work_dirs/{expt_name}'
-checkpoint_config = dict(interval=1, max_keep_ckpts=15)
+checkpoint_config = dict(interval=1, max_keep_ckpts=15, create_symlink=False)
 
 log_config = dict(
     interval=50,

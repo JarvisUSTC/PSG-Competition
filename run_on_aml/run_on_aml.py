@@ -353,7 +353,7 @@ def main():
             f"{args.config_file} "
             f"--gpus 8 "
             f"--launcher pytorch "
-            # f"--resume_from {args.output_path}/checkpoint.pth "
+            f"--resume-from {args.output_path}/epoch_12.pth "
             f"--work-dir {args.output_path} 2>&1 |tee {args.output_path}/azure_log.txt"
         )
         print(cmd)

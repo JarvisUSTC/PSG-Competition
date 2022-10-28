@@ -13,8 +13,12 @@ from openpsg.models.relation_heads.approaches import Result
 from openpsg.utils.utils import adjust_text_color, draw_text, get_colormap
 from mmdet.models.builder import HEADS, build_head
 
+import copy
+import time
 
 def triplet2Result(triplets, use_mask, eval_pan_rels=True):
+    if isinstance(triplets, Result):
+        return triplets
     if use_mask:
         bboxes, labels, rel_pairs, masks, pan_rel_pairs, pan_seg, complete_r_labels, complete_r_dists, \
             r_labels, r_dists, pan_masks, rels, pan_labels \
@@ -78,19 +82,26 @@ class DeformablePSGTr(SingleStageDetector):
     def __init__(self,
                  backbone,
                  neck=None,
+                 neck_freeze=None,
                  bbox_head=None, # For relation
                  panoptic_head=None,
                  panoptic_fusion_head=None,
                  train_cfg=None,
                  test_cfg=None,
                  pretrained=None,
-                 init_cfg=None):
+                 init_cfg=None,
+                 DEBUG=False):
         super(DeformablePSGTr, self).__init__(backbone, neck, bbox_head, train_cfg,
                                     test_cfg, pretrained, init_cfg)
         self.CLASSES = self.bbox_head.object_classes
         self.PREDICATES = self.bbox_head.predicate_classes
         self.num_classes = self.bbox_head.num_classes
-
+        self.DEBUG = DEBUG
+        if neck:
+            if neck_freeze:
+                self.neck.eval()
+                for param in self.neck.parameters():
+                    param.requires_grad = False
         ## Panoptic Head
         panoptic_head_ = panoptic_head.deepcopy()
         panoptic_head_.update(train_cfg=train_cfg)
@@ -137,25 +148,60 @@ class DeformablePSGTr(SingleStageDetector):
         super(SingleStageDetector, self).forward_train(img, img_metas)
 
         x = self.extract_feat(img)
-        if self.bbox_head.use_mask:
-            BS, C, H, W = img.shape
-            new_gt_masks = []
-            for b, each in enumerate(gt_masks):
-                mask = each.pad(img_metas[b]['pad_shape'][:2], pad_val=0)\
-                    .to_tensor(dtype=torch.bool, device=gt_labels[b].device)
-                new_gt_masks.append(mask)
-            # Keep same as mask head
+        # if self.bbox_head.use_mask:
+        #     BS, C, H, W = img.shape
+        #     new_gt_masks = []
+        #     for b, each in enumerate(gt_masks):
+        #         mask = each.pad(img_metas[b]['pad_shape'][:2], pad_val=0)\
+        #             .to_tensor(dtype=torch.bool, device=gt_labels[b].device)
+        #         new_gt_masks.append(mask)
+        #     # Keep same as mask head, could be implemented in bbox_head.forward_train
+        #     gt_masks_rel_head = new_gt_masks
+        # start = torch.cuda.Event(enable_timing=True)
+        # end = torch.cuda.Event(enable_timing=True)
 
-            gt_masks_rel_head = new_gt_masks
-        losses_panoptic_head, entity_query_embedding, enc_memory, mlvl_enc_memory, entity_all_bbox_preds, entity_all_cls_scores = self.panoptic_head.forward_train(x, img_metas, gt_bboxes,
-                                            gt_labels, gt_masks,
-                                            gt_semantic_seg,
+        # start.record()
+        losses_panoptic_head, entity_query_embedding, enc_memory, mlvl_enc_memory, entity_all_bbox_preds, entity_all_cls_scores = self.panoptic_head.forward_train(x, img_metas, copy.deepcopy(gt_bboxes),
+                                            copy.deepcopy(gt_labels), copy.deepcopy(gt_masks),
+                                            copy.deepcopy(gt_semantic_seg),
                                             gt_bboxes_ignore)
+        # torch.cuda.synchronize()
+        # end.record()
+        # print('Panoptic Head:', start.elapsed_time(end))
+        # start.record()
         losses = dict()
-        losses = self.bbox_head.forward_train(x, img, img_metas, entity_query_embedding, enc_memory, mlvl_enc_memory,
-                                              entity_all_bbox_preds, entity_all_cls_scores, gt_rels, gt_bboxes,
-                                              gt_labels, gt_masks_rel_head, gt_semantic_seg,
+        if self.panoptic_head.topk_for_relation == -1:
+            def sum_dict(list_dict):
+                temp = list_dict[0]
+                for each_d in list_dict[1:]:
+                    for key in temp.keys() | each_d.keys():
+                        temp[key] = sum([d.get(key, 0) for d in (temp, each_d)])
+                for key in temp.keys():
+                    temp[key] = temp[key] / len(list_dict) # average
+                return temp
+            # gt matched
+            loss_b = []
+            bbox = entity_all_bbox_preds['bbox']
+            mask = entity_all_bbox_preds['mask']
+            cls = entity_all_cls_scores['cls']
+            for img_i in range(len(bbox)):
+                entity_all_bbox_preds = dict(bbox=bbox[img_i], mask=[[mask[-1][img_i]]])
+                entity_all_cls_scores = dict(cls=cls[img_i])
+                x_i = [x[i][img_i:img_i+1] for i in range(len(x))]
+                loss_i = self.bbox_head.forward_train(x_i, img[img_i:img_i+1], [img_metas[img_i]], entity_query_embedding[img_i], enc_memory[img_i:img_i+1], mlvl_enc_memory[:,img_i:img_i+1],
+                                              entity_all_bbox_preds, entity_all_cls_scores, [gt_rels[img_i]], [gt_bboxes[img_i]],
+                                              [gt_labels[img_i]], [gt_masks[img_i]], gt_semantic_seg[img_i:img_i+1],
                                               gt_bboxes_ignore)
+                loss_b.append(loss_i)
+            losses.update(sum_dict(loss_b))
+        else:
+            losses = self.bbox_head.forward_train(x, img, img_metas, entity_query_embedding, enc_memory, mlvl_enc_memory,
+                                                entity_all_bbox_preds, entity_all_cls_scores, gt_rels, gt_bboxes,
+                                                gt_labels, gt_masks, gt_semantic_seg,
+                                                gt_bboxes_ignore)
+        # torch.cuda.synchronize()
+        # end.record()
+        # print('Rel Head:', start.elapsed_time(end))
         losses.update(losses_panoptic_head)
         return losses
 
@@ -165,28 +211,70 @@ class DeformablePSGTr(SingleStageDetector):
         mask_cls_results, mask_pred_results, entity_query_embedding, enc_memory, mlvl_enc_memory, entity_all_bbox_preds, entity_all_cls_scores = self.panoptic_head.simple_test(
             feat, img_metas
         )
-        pan_results_list = self.panoptic_fusion_head.simple_test(mask_cls_results, mask_pred_results, img_metas, rescale=rescale)
-        
-        results_list = self.bbox_head.simple_test_bboxes(feat,
-                                                  img_metas,
-                                                  entity_query_embedding, 
-                                                  enc_memory,
-                                                  mlvl_enc_memory,
-                                                  entity_all_bbox_preds, 
-                                                  entity_all_cls_scores,
-                                                  rescale=rescale)
-        if self.bbox_head.use_mask:
-            results_list_tmp = []
-            for batch_idx, results in enumerate(results_list):
-                results_list_tmp.append(list(results))
-                pan_seg, pan_masks, pan_labels, _, qis = pan_results_list[batch_idx]['pan_results']
-                # if len(pan_labels) <= 1: # detect 0 or 1 entity
-                #     pan_labels = [0]
-                #     pan_masks = [np.ones((1, pan_seg.shape[0], pan_seg.shape[1])).astype(bool)]
-                #   bboxes, labels, rel_pairs, masks, pan_rel_pairs, pan_seg, complete_r_labels, complete_r_dists, \
-                #   r_labels, r_dists, pan_masks, rels, pan_labels \
-                results_list_tmp[-1][5] = pan_results_list[batch_idx]['pan_results'][0]
-            results_list = results_list_tmp
+        if self.DEBUG == True:
+            self.bbox_head.img = img
+            self.bbox_head.img_metas = img_metas
+        if self.panoptic_head.topk_for_relation == -1:
+            results_list = []
+            max_per_img = self.test_cfg.get('max_per_img', 100)
+            bbox_placeholder = np.zeros((2 * max_per_img, 5))
+            pan_results_list = self.panoptic_fusion_head.simple_test(mask_cls_results, mask_pred_results, img_metas, rescale=rescale)
+            for img_id, pan_results in enumerate(pan_results_list):
+                # single image
+
+                pan_seg, pan_masks, pan_labels, _, qis = pan_results['pan_results']
+                if len(pan_labels) <= 1 or len(qis) <= 1:
+                    pan_labels = [0]
+                    pan_masks = [np.ones((1, pan_seg.shape[0], pan_seg.shape[1])).astype(bool)]
+                    rel_scores = np.full((max_per_img, 57), 1 / 57).astype(np.float32)
+                    s_o_indices = np.zeros((max_per_img, 2)).astype(np.int64)
+                    results_list.append(Result(
+                        masks=pan_masks,
+                        labels=np.array(pan_labels) % INSTANCE_OFFSET + 1,
+                        rel_pair_idxes=s_o_indices,
+                        rel_dists=rel_scores,
+                        pan_results=pan_seg, # only for PQ evaluation
+                        refine_bboxes=bbox_placeholder, # placeholder
+                    ))
+                else:
+                    bbox_all = entity_all_bbox_preds['bbox']
+                    mask_all = entity_all_bbox_preds['mask']
+                    cls_all = entity_all_cls_scores['cls']
+                    entity_all_bbox_preds = dict(bbox=bbox_all[:,img_id:img_id+1,qis], mask=[[mask[qis,:].detach() for i, mask in enumerate(all_mask_pred)] for all_mask_pred in mask_all])
+                    entity_all_cls_scores = dict(cls=cls_all[:,img_id:img_id+1,qis])
+                    feat_i = [feat[i][img_id:img_id+1] for i in range(len(feat))]
+
+                    results_list_i = self.bbox_head.simple_test_bboxes(feat_i,
+                                        img_metas[img_id:img_id+1],
+                                        entity_query_embedding[:,img_id:img_id+1,qis], 
+                                        enc_memory[img_id:img_id+1],
+                                        mlvl_enc_memory[:,img_id:img_id+1],
+                                        entity_all_bbox_preds, 
+                                        entity_all_cls_scores,
+                                        rescale=rescale)
+                    results_list.append(results_list_i[0])
+                
+        else:
+            results_list = self.bbox_head.simple_test_bboxes(feat,
+                                                    img_metas,
+                                                    entity_query_embedding, 
+                                                    enc_memory,
+                                                    mlvl_enc_memory,
+                                                    entity_all_bbox_preds, 
+                                                    entity_all_cls_scores,
+                                                    rescale=rescale)
+        # if self.bbox_head.use_mask:
+        #     results_list_tmp = []
+        #     for batch_idx, results in enumerate(results_list):
+        #         results_list_tmp.append(list(results))
+        #         pan_seg, pan_masks, pan_labels, _, qis = pan_results_list[batch_idx]['pan_results']
+        #         # if len(pan_labels) <= 1: # detect 0 or 1 entity
+        #         #     pan_labels = [0]
+        #         #     pan_masks = [np.ones((1, pan_seg.shape[0], pan_seg.shape[1])).astype(bool)]
+        #         #   bboxes, labels, rel_pairs, masks, pan_rel_pairs, pan_seg, complete_r_labels, complete_r_dists, \
+        #         #   r_labels, r_dists, pan_masks, rels, pan_labels \
+        #         # results_list_tmp[-1][5] = pan_seg
+        #     results_list = results_list_tmp
         sg_results = [
             triplet2Result(triplets, self.bbox_head.use_mask)
             for triplets in results_list

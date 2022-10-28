@@ -45,6 +45,8 @@ class DeformableDETRMaskHead(DETRHead):
 
     def __init__(self,
                  *args,
+                 freeze=None,
+                 topk_for_relation=300,
                  with_box_refine=False,
                  as_two_stage=False,
                  transformer=None,
@@ -78,6 +80,14 @@ class DeformableDETRMaskHead(DETRHead):
         self.importance_sample_ratio = self.train_cfg.get(
             'importance_sample_ratio', 0.75)
         self.mask_assigner = build_assigner(mask_assigner)
+
+        self.freeze = freeze
+        if self.freeze:
+            self.eval()
+            for param in self.parameters():
+                param.requires_grad = False
+        
+        self.topk_for_relation = topk_for_relation
             
         
 
@@ -389,6 +399,7 @@ class DeformableDETRMaskHead(DETRHead):
             mask_weights_list,
             num_total_pos,
             num_total_neg,
+            _,_,_ # NOTE: for triplet index prediction
         ) = cls_reg_targets
         labels = torch.cat(labels_list, 0)
         label_weights = torch.cat(label_weights_list, 0)
@@ -529,10 +540,21 @@ class DeformableDETRMaskHead(DETRHead):
             mode='bilinear',
             align_corners=False)
 
-        entity_all_bbox_preds = dict(bbox=all_bbox_preds,
-                              mask=all_mask_preds)
-        
-        entity_all_cls_scores = dict(cls=all_cls_scores,)
+        # To reduce search space
+        if self.topk_for_relation < self.num_query and self.topk_for_relation != -1:
+            scores, _ = all_cls_scores[-1].sigmoid().max(-1)
+            scores, indices = scores.topk(self.topk_for_relation, -1)
+            bz_indices = torch.arange(all_bbox_preds.shape[1], dtype=torch.long)[None, :].T.repeat(1, self.topk_for_relation)
+            entity_all_bbox_preds = dict(bbox=all_bbox_preds[:,bz_indices,indices,:].detach(),
+                                mask=[[mask[indices[i],:].detach() for i, mask in enumerate(all_mask_pred)] for all_mask_pred in all_mask_preds])
+            
+            entity_all_cls_scores = dict(cls=all_cls_scores[:,bz_indices,indices,:].detach(),)
+            entity_query_embedding = entity_query_embedding[:, bz_indices, indices, :]
+        else:
+            entity_all_bbox_preds = dict(bbox=all_bbox_preds,
+                                mask=all_mask_preds)
+            
+            entity_all_cls_scores = dict(cls=all_cls_scores,)
 
         return mask_cls_results, mask_pred_results, entity_query_embedding, enc_memory, mlvl_enc_memory, entity_all_bbox_preds, entity_all_cls_scores
     
@@ -600,11 +622,52 @@ class DeformableDETRMaskHead(DETRHead):
         losses = self.loss(all_cls_scores, all_bbox_preds,
                            enc_cls_scores, enc_bbox_preds, all_mask_preds, enc_mask_preds, gt_bboxes, gt_labels, gt_masks, 
                            img_metas)
-        
-        entity_all_bbox_preds = dict(bbox=all_bbox_preds,
-                              mask=all_mask_preds)
-        
-        entity_all_cls_scores = dict(cls=all_cls_scores,)
+        # To reduce search space
+        if self.topk_for_relation == -1:
+            # only get matched results
+            # NOTE: bipartite matching to convert gt into indices
+            
+            # only contains predictions from last layer
+            all_cls_scores_final = all_cls_scores[-1]
+            all_bbox_preds_final = all_bbox_preds[-1]
+            all_mask_preds_final = all_mask_preds[-1]
+            pos_query_inds_list, _, gt_permutation_list = self.get_targets(
+                all_cls_scores_final,
+                all_bbox_preds_final,
+                all_mask_preds_final,
+                gt_bboxes,
+                gt_labels,
+                gt_masks,
+                img_metas,
+                gt_bboxes_ignore,
+            )[-3:]
+            bbox = []
+            cls = []
+            entity_query = []
+            for bz, inds in enumerate(pos_query_inds_list):
+                bbox.append(all_bbox_preds[:,bz:bz+1, inds].detach())
+                cls.append(all_cls_scores[:,bz:bz+1, inds].detach())
+                entity_query.append(entity_query_embedding[:,bz:bz+1, inds])
+            entity_all_bbox_preds = dict(bbox=bbox,
+                                mask=[[mask[pos_query_inds_list[i],:].detach() for i, mask in enumerate(all_mask_pred)] for all_mask_pred in all_mask_preds])
+            
+            entity_all_cls_scores = dict(cls=cls,)
+            entity_query_embedding = entity_query            
+        else:
+            if self.topk_for_relation < self.num_query:
+                scores, _ = all_cls_scores[-1].sigmoid().max(-1)
+                scores, indices = scores.topk(self.topk_for_relation, -1)
+                bz_indices = torch.arange(all_bbox_preds.shape[1], dtype=torch.long)[None, :].T.repeat(1, self.topk_for_relation)
+                entity_all_bbox_preds = dict(bbox=all_bbox_preds[:,bz_indices,indices,:].detach(),
+                                    mask=[[mask[indices[i],:].detach() for i, mask in enumerate(all_mask_pred)] for all_mask_pred in all_mask_preds])
+                
+                entity_all_cls_scores = dict(cls=all_cls_scores[:,bz_indices,indices,:].detach(),)
+                entity_query_embedding = entity_query_embedding[:, bz_indices, indices, :]
+            else:
+                entity_all_bbox_preds = dict(bbox=all_bbox_preds,
+                                    mask=all_mask_preds)
+                
+                entity_all_cls_scores = dict(cls=all_cls_scores,)
 
         return losses, entity_query_embedding, enc_memory, mlvl_enc_memory, entity_all_bbox_preds, entity_all_cls_scores
     
@@ -704,6 +767,7 @@ class DeformableDETRMaskHead(DETRHead):
             mask_weights_list,
             pos_inds_list,
             neg_inds_list,
+            gt_permutation_list,
         ) = multi_apply(
             self._get_target_single,
             cls_scores_list,
@@ -726,6 +790,9 @@ class DeformableDETRMaskHead(DETRHead):
             mask_weights_list,
             num_total_pos,
             num_total_neg,
+            pos_inds_list,       # NOTE: for triplet index prediction
+            neg_inds_list,       # NOTE: for triplet index prediction
+            gt_permutation_list, # NOTE: for triplet index prediction
         )
 
     def _get_target_single(
@@ -740,9 +807,7 @@ class DeformableDETRMaskHead(DETRHead):
         gt_bboxes_ignore=None,
     ):
         """"Compute regression and classification targets for one image.
-
         Outputs from a single decoder layer of a single feature level are used.
-
         Args:
             cls_score (Tensor): Box score logits from a single decoder layer
                 for one image. Shape [num_query, cls_out_channels].
@@ -756,10 +821,8 @@ class DeformableDETRMaskHead(DETRHead):
             img_meta (dict): Meta information for one image.
             gt_bboxes_ignore (Tensor, optional): Bounding boxes
                 which can be ignored. Default None.
-
         Returns:
             tuple[Tensor]: a tuple containing the following for one image.
-
                 - labels (Tensor): Labels of each image.
                 - label_weights (Tensor]): Label weights of each image.
                 - bbox_targets (Tensor): BBox targets of each image.
@@ -824,4 +887,6 @@ class DeformableDETRMaskHead(DETRHead):
         pos_gt_bboxes_normalized = sampling_result.pos_gt_bboxes / factor
         pos_gt_bboxes_targets = bbox_xyxy_to_cxcywh(pos_gt_bboxes_normalized)
         bbox_targets[pos_inds] = pos_gt_bboxes_targets
-        return (labels, label_weights, bbox_targets, bbox_weights, mask_targets, mask_weights, pos_inds, neg_inds)
+
+        gt_permutation = sampling_result.pos_assigned_gt_inds # NOTE: i.e. matched_col_inds
+        return (labels, label_weights, bbox_targets, bbox_weights, mask_targets, mask_weights, pos_inds, neg_inds, gt_permutation)

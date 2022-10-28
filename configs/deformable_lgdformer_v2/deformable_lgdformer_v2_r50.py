@@ -115,7 +115,7 @@ model = dict(
                          transformerlayers=dict(
                              type='BaseTransformerLayer',
                              attn_cfgs=[
-                                 dict(type='MultiheadAttention',
+                                 dict(type='MultiScaleDeformableAttention',
                                       embed_dims=256,
                                       num_heads=8,
                                       dropout=0.1)
@@ -225,8 +225,7 @@ model = dict(
         rel_sub_obj_loss_bbox=dict(type='L1Loss', loss_weight=5.0),
         rel_loss_cls=dict(type='CrossEntropyLoss',
                       use_sigmoid=False,
-                      loss_weight=2.0,
-                      class_weight=1.0),
+                      loss_weight=2.0,),
         sub_id_loss=dict(type='MultilabelCrossEntropy', loss_weight=2.0),
         obj_id_loss=dict(type='MultilabelCrossEntropy', loss_weight=2.0),
         loss_cls=dict(type='CrossEntropyLoss',

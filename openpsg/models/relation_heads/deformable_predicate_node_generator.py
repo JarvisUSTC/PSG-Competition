@@ -181,6 +181,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
         valid_ratios=None,
         spatial_shapes=None,
         level_start_index=None,
+        reference_points=None,
     ):
         """
             Args:
@@ -199,7 +200,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
         mask_flatten = mask.flatten(1)
 
         rel_memory = self.rel_encoder(
-            src, src_pos_embed, shared_encoder_memory, mask_flatten
+            src, src_pos_embed, shared_encoder_memory, mask_flatten, spatial_shapes, reference_points, level_start_index, valid_ratios
         )
 
         # initialize the rel mem features HWXNXC
@@ -217,6 +218,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
         rel_feat_all = []
         ent_aware_rel_hs_sub = []
         ent_aware_rel_hs_obj = []
+        reference_points_output = [] # for debug
 
         # outputs placeholder & container
         intermediate = []
@@ -264,6 +266,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
                     reference_points_input = rel_reference_points[:, :, None] * torch.cat([valid_ratios,valid_ratios],-1)[:, None]
                 else:
                     reference_points_input = rel_reference_points[:, :, None] * valid_ratios[:, None]
+                reference_points_output.append(reference_points_input)
                 predicate_sub_dec_output_dict = self.predicate_sub_decoder_layers[idx](
                     query=rel_tgt,
                     key=None,
@@ -330,6 +333,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
             dynamic_query = HiddenInstance(feature=dynamic_query)
             dynamic_query.feature.transpose_(1, 2)
 
+        decoder_out_dict['reference_points'] = reference_points_output
         return (
             rel_rep,
             (sub_ent_rep, obj_ent_rep, dynamic_query),
@@ -338,15 +342,18 @@ class Deformable_Predicate_Node_Generator(BaseModule):
 
         
 
-    def rel_encoder(self, src, src_pos_embed, shared_encoder_memory, mask_flatten):
+    def rel_encoder(self, src, src_pos_embed, shared_encoder_memory, mask_flatten, spatial_shapes, reference_points, level_start_index, valid_ratios):
         if self.encoder is not None:
             rel_memory = self.encoder(
-                shared_encoder_memory,
+                query=shared_encoder_memory,
                 key=None,
                 value=None,
+                query_pos=src_pos_embed.permute(2,1,0),
                 query_key_padding_mask=mask_flatten,
-                query_pos=src_pos_embed,
-            )
+                spatial_shapes=spatial_shapes,
+                reference_points=reference_points,
+                level_start_index=level_start_index,
+                valid_ratios=valid_ratios,)
         else:
             if len(src.shape) == 4 and len(shared_encoder_memory.shape):
                 bs, c, h, w = src.shape

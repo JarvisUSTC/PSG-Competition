@@ -18,6 +18,7 @@ from mmdet.models.builder import HEADS, build_loss, build_head
 from mmdet.models.dense_heads import AnchorFreeHead
 from mmdet.models.utils import build_transformer
 from .predicate_node_generator import build_predicate_node_generator
+from openpsg.models.utils import preprocess_panoptic_gt
 #####imports for tools
 from packaging import version
 import gc
@@ -177,6 +178,8 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             assert 'bbox_assigner' in train_cfg, 'bbox_assigner should be provided '\
                 'when train_cfg is set.'
             id_assigner = train_cfg['id_assigner']
+            if rel_loss_cls.get('use_sigmoid', False):
+                id_assigner['r_cls_use_sigmoid'] = True
             bbox_assigner = train_cfg['bbox_assigner']
             assert loss_cls['loss_weight'] == bbox_assigner['cls_cost']['weight'], \
                 'The classification weight for loss and matcher should be' \
@@ -205,6 +208,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         self.temp = temp
         self.num_classes = num_classes
         self.num_things_classes = num_things_classes
+        self.num_stuff_classes = self.num_classes - self.num_things_classes if self.num_classes - self.num_things_classes > 0 else 0
         self.num_relations = num_relations
         self.object_classes = object_classes
         self.predicate_classes = predicate_classes
@@ -314,6 +318,19 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         self.sub_cls_embed = Linear(self.embed_dims, self.sub_cls_out_channels)
         self.sub_box_embed = MLP(self.embed_dims, self.embed_dims, 4, 3)
         self.rel_cls_embed = Linear(self.embed_dims, self.rel_cls_out_channels)
+        prior_prob = 0.01
+        import math
+        bias_value = -math.log((1 - prior_prob) / prior_prob)
+        if self.obj_loss_cls.use_sigmoid:
+            self.obj_cls_embed.bias.data = torch.ones(self.num_classes) * bias_value
+        nn.init.constant_(self.obj_box_embed.layers[-1].weight.data, 0)
+        nn.init.constant_(self.obj_box_embed.layers[-1].bias.data, 0)
+        if self.sub_loss_cls.use_sigmoid:
+            self.sub_cls_embed.bias.data = torch.ones(self.num_classes) * bias_value
+        nn.init.constant_(self.sub_box_embed.layers[-1].weight.data, 0)
+        nn.init.constant_(self.sub_box_embed.layers[-1].bias.data, 0)
+        if self.rel_loss_cls.use_sigmoid:
+            self.rel_cls_embed.bias.data = torch.ones(len(self.predicate_classes)) * bias_value
 
         self.swin = False
         if self.use_mask:
@@ -386,6 +403,39 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)
         return valid_ratio
 
+    @staticmethod
+    def get_reference_points(spatial_shapes, valid_ratios, device):
+        """Get the reference points used in decoder.
+        Args:
+            spatial_shapes (Tensor): The shape of all
+                feature maps, has shape (num_level, 2).
+            valid_ratios (Tensor): The radios of valid
+                points on the feature map, has shape
+                (bs, num_levels, 2)
+            device (obj:`device`): The device where
+                reference_points should be.
+        Returns:
+            Tensor: reference points used in decoder, has \
+                shape (bs, num_keys, num_levels, 2).
+        """
+        reference_points_list = []
+        for lvl, (H, W) in enumerate(spatial_shapes):
+            #  TODO  check this 0.5
+            ref_y, ref_x = torch.meshgrid(
+                torch.linspace(
+                    0.5, H - 0.5, H, dtype=torch.float32, device=device),
+                torch.linspace(
+                    0.5, W - 0.5, W, dtype=torch.float32, device=device))
+            ref_y = ref_y.reshape(-1)[None] / (
+                valid_ratios[:, None, lvl, 1] * H)
+            ref_x = ref_x.reshape(-1)[None] / (
+                valid_ratios[:, None, lvl, 0] * W)
+            ref = torch.stack((ref_x, ref_y), -1)
+            reference_points_list.append(ref)
+        reference_points = torch.cat(reference_points_list, 1)
+        reference_points = reference_points[:, :, None] * valid_ratios[:, None]
+        return reference_points
+
     def forward(self, feats, img_metas, enc_memory, mlvl_enc_memory, entity_query_embedding, entity_all_bbox_preds, entity_all_cls_scores, train_mode=False):
         """
         input from panoptic head:
@@ -418,7 +468,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
 
         outputs_coord = entity_all_bbox_preds['bbox']
         outputs_class = entity_all_cls_scores['cls']
-        seg_masks = torch.stack(entity_all_bbox_preds['mask'][-1]) # compatible with vallina psgformer
+        seg_masks = entity_all_bbox_preds['mask'][-1] # compatible with vallina psgformer
 
         ### new interaction
         mlvl_feats = feats
@@ -468,6 +518,11 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         valid_ratios = torch.stack(
             [self.get_valid_ratio(m) for m in mlvl_masks[1:]], 1)
 
+        reference_points = \
+            self.get_reference_points(spatial_shapes,
+                                      valid_ratios,
+                                      device=feat.device)
+
         rel_hs, ext_inter_feats, rel_decoder_out_res = self.predicate_node_generator(
             feat_flatten,
             mask_flatten,
@@ -476,10 +531,11 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             None,
             memory,
             outs_obj_dec,
-            outputs_coord[-1],
+            outputs_coord[-1] if not self.predicate_node_generator.no_coords_prior else None, # because of no gt_bbox for stuff, the coords are not useful for stuff...
             valid_ratios=valid_ratios,
             spatial_shapes=spatial_shapes,
             level_start_index=level_start_index,
+            reference_points=reference_points,
         )
 
         outs_rel_dec = rel_hs.feature
@@ -520,7 +576,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         obj_outputs_class_aux = self.obj_cls_embed(outs_rel_dec_ent_aware_obj)
         obj_outputs_coord_aux = self.obj_box_embed(outs_rel_dec_ent_aware_obj).sigmoid()
         rel_sub_obj_outputs_union_box_aux = []
-        for layer_idx in range(self.predicate_node_generator.num_decoder_layer + 1):
+        for layer_idx in range(self.predicate_node_generator.num_decoder_layer):
             rel_sub_obj_outputs_union_box_aux.append(self.predicate_node_generator.rel_reference_points[layer_idx](outs_rel_dec[layer_idx]).sigmoid())
         rel_sub_obj_outputs_union_box_aux = torch.stack(rel_sub_obj_outputs_union_box_aux, 0)
         if self.use_mask:
@@ -545,11 +601,11 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             #                                            obj_seg_masks.shape[-1])
             batch_4x_h, batch_4x_w = feats[0].shape[-2:]
             img_feat = feats[0] + F.interpolate(enc_memory, size=(batch_4x_h, batch_4x_w))
-            sub_query_mask_embed = self.sub_mask_head(outs_rel_dec_ent_aware_sub[-1])
-            outputs_sub_seg_masks_aux = torch.einsum('bqc, bchw -> bqhw', sub_query_mask_embed, img_feat)
+            sub_query_mask_embed = self.sub_mask_head(outs_rel_dec_ent_aware_sub)
+            outputs_sub_seg_masks_aux = torch.einsum('sbqc, bchw -> sbqhw', sub_query_mask_embed, img_feat)
 
-            obj_query_mask_embed = self.obj_mask_head(outs_rel_dec_ent_aware_obj[-1])
-            outputs_obj_seg_masks_aux = torch.einsum('bqc, bchw -> bqhw', obj_query_mask_embed, img_feat)
+            obj_query_mask_embed = self.obj_mask_head(outs_rel_dec_ent_aware_obj)
+            outputs_obj_seg_masks_aux = torch.einsum('sbqc, bchw -> sbqhw', obj_query_mask_embed, img_feat)
             # ### For debug TODO
             # outputs_obj_seg_masks_aux = seg_masks[:,:self.num_rel_query]
             # outputs_sub_seg_masks_aux = seg_masks[:,:self.num_rel_query]
@@ -567,12 +623,13 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         _, object_ids = object_scores.max(-1)
 
         # prediction
-        sub_outputs_class = torch.empty_like(outputs_class[:,:,:self.num_rel_query])
-        sub_outputs_coord = torch.empty_like(outputs_coord[:,:,:self.num_rel_query])
-        obj_outputs_class = torch.empty_like(outputs_class[:,:,:self.num_rel_query])
-        obj_outputs_coord = torch.empty_like(outputs_coord[:,:,:self.num_rel_query])
-        outputs_sub_seg_masks = torch.empty_like(seg_masks[:,:self.num_rel_query])
-        outputs_obj_seg_masks = torch.empty_like(seg_masks[:,:self.num_rel_query])
+        sub_outputs_class = torch.empty_like(outputs_class[:,:,:1].repeat(1,1,self.num_rel_query,1))
+        sub_outputs_coord = torch.empty_like(outputs_coord[:,:,:1].repeat(1,1,self.num_rel_query,1))
+        obj_outputs_class = torch.empty_like(outputs_class[:,:,:1].repeat(1,1,self.num_rel_query,1))
+        obj_outputs_coord = torch.empty_like(outputs_coord[:,:,:1].repeat(1,1,self.num_rel_query,1))
+        # outputs_sub_seg_masks = torch.empty_like(seg_masks[:,:self.num_rel_query])
+        outputs_sub_seg_masks = [torch.empty_like(seg_mask[:1].repeat(self.num_rel_query,1,1)) for seg_mask in seg_masks]
+        outputs_obj_seg_masks = [torch.empty_like(seg_mask[:1].repeat(self.num_rel_query,1,1)) for seg_mask in seg_masks]
         triplet_sub_ids = []
         triplet_obj_ids = []
         for i in range(len(subject_ids)):
@@ -582,8 +639,8 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             sub_outputs_coord[:, i] = outputs_coord[:, i, triplet_sub_id, :]
             obj_outputs_class[:, i] = outputs_class[:, i, triplet_obj_id, :]
             obj_outputs_coord[:, i] = outputs_coord[:, i, triplet_obj_id, :]
-            outputs_sub_seg_masks[i] = seg_masks[i, triplet_sub_id, :, :]
-            outputs_obj_seg_masks[i] = seg_masks[i, triplet_obj_id, :, :]
+            outputs_sub_seg_masks[i] = seg_masks[i][triplet_sub_id, :, :]
+            outputs_obj_seg_masks[i] = seg_masks[i][triplet_obj_id, :, :]
             triplet_sub_ids.append(triplet_sub_id)
             triplet_obj_ids.append(triplet_obj_id)
 
@@ -611,6 +668,10 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                               sub_seg_aux=outputs_sub_seg_masks_aux,
                               obj_seg_aux=outputs_obj_seg_masks_aux,
                               rel_sub_obj_aux=rel_sub_obj_outputs_union_box_aux)
+
+        # For debug
+        if hasattr(self, 'img'):
+            self.vis_reference_points(self.img.clone(), rel_decoder_out_res['reference_points'], self.img_metas, sub_outputs_coord[-1], obj_outputs_coord[-1], rel_outputs_class[-1])
         return all_cls_scores, all_bbox_preds
 
     @force_fp32(apply_to=('all_cls_scores_list', 'all_bbox_preds_list'))
@@ -654,9 +715,9 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         if self.use_mask:
             all_s_mask_preds_aux = all_bbox_preds['sub_seg_aux']
             all_o_mask_preds_aux = all_bbox_preds['obj_seg_aux']
-
-            all_s_mask_preds_aux = [all_s_mask_preds_aux for _ in range(num_dec_layers)]
-            all_o_mask_preds_aux = [all_o_mask_preds_aux for _ in range(num_dec_layers)]
+            if len(all_s_mask_preds_aux) == 1:
+                all_s_mask_preds_aux = [all_s_mask_preds_aux for _ in range(num_dec_layers)]
+                all_o_mask_preds_aux = [all_o_mask_preds_aux for _ in range(num_dec_layers)]
 
         all_gt_bboxes_list = [gt_bboxes_list for _ in range(num_dec_layers)]
         all_gt_labels_list = [gt_labels_list for _ in range(num_dec_layers)]
@@ -748,9 +809,9 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         num_dec_layer = 0
         for s_loss_cls_i, o_loss_cls_i, r_loss_cls_i, \
             s_loss_bbox_i, o_loss_bbox_i, \
-            s_loss_iou_i, o_loss_iou_i, rel_s_o_loss_bbox_i in zip(s_losses_cls[:-1], o_losses_cls[:-1], r_losses_cls[:-1],
+            s_loss_iou_i, o_loss_iou_i, rel_s_o_loss_bbox_i, s_mask_loss_i, o_mask_loss_i in zip(s_losses_cls[:-1], o_losses_cls[:-1], r_losses_cls[:-1],
                                           s_losses_bbox[:-1], o_losses_bbox[:-1],
-                                          s_losses_iou[:-1], o_losses_iou[:-1], rel_s_o_losses_bbox[:-1]):
+                                          s_losses_iou[:-1], o_losses_iou[:-1], rel_s_o_losses_bbox[:-1], s_mask_losses[:-1], o_mask_losses[:-1]):
             loss_dict[f'd{num_dec_layer}.s_loss_cls'] = s_loss_cls_i
             loss_dict[f'd{num_dec_layer}.o_loss_cls'] = o_loss_cls_i
             loss_dict[f'd{num_dec_layer}.r_loss_cls'] = r_loss_cls_i
@@ -759,6 +820,8 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             loss_dict[f'd{num_dec_layer}.s_loss_iou'] = s_loss_iou_i
             loss_dict[f'd{num_dec_layer}.o_loss_iou'] = o_loss_iou_i
             loss_dict[f'd{num_dec_layer}.r_s_o_loss_bbox'] = rel_s_o_loss_bbox_i
+            loss_dict[f'd{num_dec_layer}.s_mask_losses'] = s_mask_loss_i
+            loss_dict[f'd{num_dec_layer}.o_mask_losses'] = o_mask_loss_i
             num_dec_layer += 1
         return loss_dict
 
@@ -846,21 +909,39 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         # num_od_matches = mask_preds.shape[0]
 
         # id loss
-        filtered_subject_scores = torch.cat(
-            filtered_subject_scores,
-            0).reshape(len(filtered_subject_scores[0]), -1)
-        filtered_object_scores = torch.cat(filtered_object_scores, 0).reshape(
-            len(filtered_object_scores[0]), -1)
-        gt_subject_id = torch.cat(gt_subject_id_list, 0)
-        gt_subject_id = F.one_hot(
-            gt_subject_id, num_classes=filtered_subject_scores.shape[-1])
-        gt_object_id = torch.cat(gt_object_id_list, 0)
-        gt_object_id = F.one_hot(gt_object_id,
-                                 num_classes=filtered_object_scores.shape[-1])
-        loss_subject_match = self.sub_id_loss(filtered_subject_scores,
-                                              gt_subject_id)
-        loss_object_match = self.obj_id_loss(filtered_object_scores,
-                                             gt_object_id)
+        # filtered_subject_scores = torch.cat(
+        #     filtered_subject_scores,
+        #     0).reshape(len(filtered_subject_scores[0]), -1)
+        # filtered_object_scores = torch.cat(filtered_object_scores, 0).reshape(
+        #     len(filtered_object_scores[0]), -1)
+        # gt_subject_id = torch.cat(gt_subject_id_list, 0)
+        # gt_subject_id = F.one_hot(
+        #     gt_subject_id, num_classes=filtered_subject_scores.shape[-1])
+        # gt_object_id = torch.cat(gt_object_id_list, 0)
+        # gt_object_id = F.one_hot(gt_object_id,
+        #                          num_classes=filtered_object_scores.shape[-1])
+        # loss_subject_match = self.sub_id_loss(filtered_subject_scores,
+        #                                       gt_subject_id)
+        # loss_object_match = self.obj_id_loss(filtered_object_scores,
+        #                                      gt_object_id)
+        # NOTE: To support bz > 1
+        loss_subject_match = []
+        loss_object_match = []
+        for b in range(num_imgs):
+            filtered_subject_scores_i = filtered_subject_scores[b].reshape(len(filtered_subject_scores[b]), -1)
+            filtered_object_scores_i = filtered_object_scores[b].reshape(len(filtered_object_scores[b]), -1)
+            gt_subject_id = gt_subject_id_list[b]
+            gt_subject_id = F.one_hot(
+                gt_subject_id, num_classes=filtered_subject_scores_i.shape[-1])
+            gt_object_id = gt_object_id_list[b]
+            gt_object_id = F.one_hot(gt_object_id,
+                                    num_classes=filtered_object_scores_i.shape[-1])
+            loss_subject_match.append(self.sub_id_loss(filtered_subject_scores_i,
+                                                gt_subject_id))
+            loss_object_match.append(self.obj_id_loss(filtered_object_scores_i,
+                                                gt_object_id))
+        loss_subject_match = sum(loss_subject_match) / len(loss_subject_match)
+        loss_object_match = sum(loss_object_match) / len(loss_object_match)
 
         # # mask loss
         # focal_loss = self.focal_loss(mask_preds, mask_targets, num_od_matches)
@@ -936,56 +1017,111 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         rel_s_o_bbox_weights = torch.cat(rel_s_o_bbox_weights_list, 0)
 
         if self.use_mask:
-            s_mask_targets = torch.cat(s_mask_targets_list,
-                                       0).float().flatten(1)
-            o_mask_targets = torch.cat(o_mask_targets_list,
-                                       0).float().flatten(1)
-
-            s_mask_preds = torch.cat(s_mask_preds_list, 0).flatten(1)
-            o_mask_preds = torch.cat(o_mask_preds_list, 0).flatten(1)
-            num_matches = o_mask_preds.shape[0]
+            # NOTE: To Support bz > 1
+            s_dice_loss = s_mask_targets_list[0].sum() * 0.0
+            s_mask_loss = s_mask_targets_list[0].sum() * 0.0
+            o_dice_loss = s_mask_targets_list[0].sum() * 0.0
+            o_mask_loss = s_mask_targets_list[0].sum() * 0.0
             num_total_masks = reduce_mean(r_cls_scores.new_tensor([num_total_pos]))
             num_total_masks = max(num_total_masks, 1)
-            with torch.no_grad():
-                s_points_coords = get_uncertain_point_coords_with_randomness(
-                    s_mask_preds.reshape(torch.cat(s_mask_targets_list,0).shape).unsqueeze(1), None, self.num_points,
-                    self.oversample_ratio, self.importance_sample_ratio)
-                # shape (num_total_gts, h, w) -> (num_total_gts, num_points)
-                s_mask_point_targets = point_sample(
-                    s_mask_targets.reshape(torch.cat(s_mask_targets_list,0).shape).unsqueeze(1).float(), s_points_coords).squeeze(1)
 
-                o_points_coords = get_uncertain_point_coords_with_randomness(
-                    o_mask_preds.reshape(torch.cat(o_mask_targets_list,0).shape).unsqueeze(1), None, self.num_points,
-                    self.oversample_ratio, self.importance_sample_ratio)
-                # shape (num_total_gts, h, w) -> (num_total_gts, num_points)
-                o_mask_point_targets = point_sample(
-                    o_mask_targets.reshape(torch.cat(o_mask_targets_list,0).shape).unsqueeze(1).float(), o_points_coords).squeeze(1)
+            for b in range(num_imgs):
+                s_mask_targets = s_mask_targets_list[b].float().flatten(1)
+                o_mask_targets = o_mask_targets_list[b].float().flatten(1)
+                s_mask_preds = s_mask_preds_list[b].flatten(1)
+                o_mask_preds = o_mask_preds_list[b].flatten(1)
+                with torch.no_grad():
+                    s_points_coords = get_uncertain_point_coords_with_randomness(
+                        s_mask_preds.reshape(s_mask_targets_list[b].shape).unsqueeze(1), None, self.num_points,
+                        self.oversample_ratio, self.importance_sample_ratio)
+                    # shape (num_total_gts, h, w) -> (num_total_gts, num_points)
+                    s_mask_point_targets = point_sample(
+                        s_mask_targets.reshape(s_mask_targets_list[b].shape).unsqueeze(1).float(), s_points_coords).squeeze(1)
 
-            s_mask_point_preds = point_sample(
-                s_mask_preds.reshape(torch.cat(s_mask_targets_list,0).shape).unsqueeze(1), s_points_coords).squeeze(1)
+                    o_points_coords = get_uncertain_point_coords_with_randomness(
+                        o_mask_preds.reshape(o_mask_targets_list[b].shape).unsqueeze(1), None, self.num_points,
+                        self.oversample_ratio, self.importance_sample_ratio)
+                    # shape (num_total_gts, h, w) -> (num_total_gts, num_points)
+                    o_mask_point_targets = point_sample(
+                        o_mask_targets.reshape(o_mask_targets_list[b].shape).unsqueeze(1).float(), o_points_coords).squeeze(1)
 
-            o_mask_point_preds = point_sample(
-                o_mask_preds.reshape(torch.cat(o_mask_targets_list,0).shape).unsqueeze(1), o_points_coords).squeeze(1)
+                s_mask_point_preds = point_sample(
+                    s_mask_preds.reshape(s_mask_targets_list[b].shape).unsqueeze(1), s_points_coords).squeeze(1)
 
-            # dice loss
-            s_dice_loss = (self.sub_dice_loss(s_mask_point_preds, s_mask_point_targets, avg_factor=num_total_masks) / len(s_mask_preds_list)).squeeze()
-            o_dice_loss = (self.obj_dice_loss(o_mask_point_preds, o_mask_point_targets, avg_factor=num_total_masks) / len(o_mask_preds_list)).squeeze()
-            # mask loss
-            # shape (num_queries, num_points) -> (num_queries * num_points, )
-            s_mask_point_preds = s_mask_point_preds.reshape(-1)
-            # shape (num_total_gts, num_points) -> (num_total_gts * num_points, )
-            s_mask_point_targets = s_mask_point_targets.reshape(-1)
-            s_mask_loss = (self.sub_mask_loss(
-                s_mask_point_preds,
-                s_mask_point_targets,
-                avg_factor=num_total_masks * self.num_points) / len(s_mask_preds_list)).squeeze()
-            o_mask_point_preds = o_mask_point_preds.reshape(-1)
-            # shape (num_total_gts, num_points) -> (num_total_gts * num_points, )
-            o_mask_point_targets = o_mask_point_targets.reshape(-1)
-            o_mask_loss = (self.obj_mask_loss(
-                o_mask_point_preds,
-                o_mask_point_targets,
-                avg_factor=num_total_masks * self.num_points) / len(o_mask_preds_list)).squeeze()            
+                o_mask_point_preds = point_sample(
+                    o_mask_preds.reshape(o_mask_targets_list[b].shape).unsqueeze(1), o_points_coords).squeeze(1)
+
+                # dice loss
+                s_dice_loss += (self.sub_dice_loss(s_mask_point_preds, s_mask_point_targets, avg_factor=num_total_masks) / len(s_mask_preds_list)).squeeze()
+                o_dice_loss += (self.obj_dice_loss(o_mask_point_preds, o_mask_point_targets, avg_factor=num_total_masks) / len(o_mask_preds_list)).squeeze()
+                # mask loss
+                # shape (num_queries, num_points) -> (num_queries * num_points, )
+                s_mask_point_preds = s_mask_point_preds.reshape(-1)
+                # shape (num_total_gts, num_points) -> (num_total_gts * num_points, )
+                s_mask_point_targets = s_mask_point_targets.reshape(-1)
+                s_mask_loss += (self.sub_mask_loss(
+                    s_mask_point_preds,
+                    s_mask_point_targets,
+                    avg_factor=num_total_masks * self.num_points) / len(s_mask_preds_list)).squeeze()
+                o_mask_point_preds = o_mask_point_preds.reshape(-1)
+                # shape (num_total_gts, num_points) -> (num_total_gts * num_points, )
+                o_mask_point_targets = o_mask_point_targets.reshape(-1)
+                o_mask_loss += (self.obj_mask_loss(
+                    o_mask_point_preds,
+                    o_mask_point_targets,
+                    avg_factor=num_total_masks * self.num_points) / len(o_mask_preds_list)).squeeze()    
+
+
+            # s_mask_targets = torch.cat(s_mask_targets_list,
+            #                            0).float().flatten(1)
+            # o_mask_targets = torch.cat(o_mask_targets_list,
+            #                            0).float().flatten(1)
+
+            # s_mask_preds = torch.cat(s_mask_preds_list, 0).flatten(1)
+            # o_mask_preds = torch.cat(o_mask_preds_list, 0).flatten(1)
+            # num_matches = o_mask_preds.shape[0]
+            # num_total_masks = reduce_mean(r_cls_scores.new_tensor([num_total_pos]))
+            # num_total_masks = max(num_total_masks, 1)
+            # with torch.no_grad():
+            #     s_points_coords = get_uncertain_point_coords_with_randomness(
+            #         s_mask_preds.reshape(torch.cat(s_mask_targets_list,0).shape).unsqueeze(1), None, self.num_points,
+            #         self.oversample_ratio, self.importance_sample_ratio)
+            #     # shape (num_total_gts, h, w) -> (num_total_gts, num_points)
+            #     s_mask_point_targets = point_sample(
+            #         s_mask_targets.reshape(torch.cat(s_mask_targets_list,0).shape).unsqueeze(1).float(), s_points_coords).squeeze(1)
+
+            #     o_points_coords = get_uncertain_point_coords_with_randomness(
+            #         o_mask_preds.reshape(torch.cat(o_mask_targets_list,0).shape).unsqueeze(1), None, self.num_points,
+            #         self.oversample_ratio, self.importance_sample_ratio)
+            #     # shape (num_total_gts, h, w) -> (num_total_gts, num_points)
+            #     o_mask_point_targets = point_sample(
+            #         o_mask_targets.reshape(torch.cat(o_mask_targets_list,0).shape).unsqueeze(1).float(), o_points_coords).squeeze(1)
+
+            # s_mask_point_preds = point_sample(
+            #     s_mask_preds.reshape(torch.cat(s_mask_targets_list,0).shape).unsqueeze(1), s_points_coords).squeeze(1)
+
+            # o_mask_point_preds = point_sample(
+            #     o_mask_preds.reshape(torch.cat(o_mask_targets_list,0).shape).unsqueeze(1), o_points_coords).squeeze(1)
+
+            # # dice loss
+            # s_dice_loss = (self.sub_dice_loss(s_mask_point_preds, s_mask_point_targets, avg_factor=num_total_masks) / len(s_mask_preds_list)).squeeze()
+            # o_dice_loss = (self.obj_dice_loss(o_mask_point_preds, o_mask_point_targets, avg_factor=num_total_masks) / len(o_mask_preds_list)).squeeze()
+            # # mask loss
+            # # shape (num_queries, num_points) -> (num_queries * num_points, )
+            # s_mask_point_preds = s_mask_point_preds.reshape(-1)
+            # # shape (num_total_gts, num_points) -> (num_total_gts * num_points, )
+            # s_mask_point_targets = s_mask_point_targets.reshape(-1)
+            # s_mask_loss = (self.sub_mask_loss(
+            #     s_mask_point_preds,
+            #     s_mask_point_targets,
+            #     avg_factor=num_total_masks * self.num_points) / len(s_mask_preds_list)).squeeze()
+            # o_mask_point_preds = o_mask_point_preds.reshape(-1)
+            # # shape (num_total_gts, num_points) -> (num_total_gts * num_points, )
+            # o_mask_point_targets = o_mask_point_targets.reshape(-1)
+            # o_mask_loss = (self.obj_mask_loss(
+            #     o_mask_point_preds,
+            #     o_mask_point_targets,
+            #     avg_factor=num_total_masks * self.num_points) / len(o_mask_preds_list)).squeeze()            
 
             # # mask loss
             # # s_focal_loss = self.sub_focal_loss(s_mask_preds,s_mask_targets,num_matches)
@@ -1016,22 +1152,40 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                 r_cls_scores.new_tensor([cls_avg_factor]))
         cls_avg_factor = max(cls_avg_factor, 1)
 
-        s_loss_cls = self.sub_loss_cls(s_cls_scores,
-                                       s_labels,
-                                       s_label_weights,
-                                       avg_factor=cls_avg_factor)
-                                    #    avg_factor=num_total_pos * 1.0)
+        if self.sub_loss_cls.use_sigmoid:
+            s_loss_cls = self.sub_loss_cls(s_cls_scores,
+                                        s_labels,
+                                        s_label_weights,
+                                        avg_factor=num_total_pos * 1.0)
+        else:
+            s_loss_cls = self.sub_loss_cls(s_cls_scores,
+                                        s_labels,
+                                        s_label_weights,
+                                        avg_factor=cls_avg_factor)
 
-        o_loss_cls = self.obj_loss_cls(o_cls_scores,
-                                       o_labels,
-                                       o_label_weights,
-                                       avg_factor=cls_avg_factor)
-                                    #    avg_factor=num_total_pos * 1.0)
+        if self.obj_loss_cls.use_sigmoid:
+            o_loss_cls = self.obj_loss_cls(o_cls_scores,
+                                        o_labels,
+                                        o_label_weights,
+                                        avg_factor=num_total_pos * 1.0)
+        else:
+            o_loss_cls = self.obj_loss_cls(o_cls_scores,
+                                        o_labels,
+                                        o_label_weights,
+                                           avg_factor=cls_avg_factor)
 
-        r_loss_cls = self.rel_loss_cls(r_cls_scores,
-                                       r_labels,
-                                       r_label_weights,
-                                       avg_factor=cls_avg_factor)
+        if self.rel_loss_cls.use_sigmoid:
+            r_labels -= 1
+            r_labels[r_labels==-1] = len(self.predicate_classes)
+            r_loss_cls = self.rel_loss_cls(r_cls_scores,
+                                        r_labels,
+                                        r_label_weights,
+                                        avg_factor=num_total_pos * 1.0)
+        else:
+            r_loss_cls = self.rel_loss_cls(r_cls_scores,
+                                        r_labels,
+                                        r_label_weights,
+                                        avg_factor=cls_avg_factor)
 
 
         # Compute the average number of gt boxes across all gpus, for
@@ -1316,23 +1470,23 @@ class DeformableLGDFormerHead(AnchorFreeHead):
 
         # filtering unmatched subject/object id predictions
         gt_subject_ids = gt_subject_ids[pos_inds]
-        gt_subject_ids_res = torch.zeros_like(gt_subject_ids)
-        for idx, gt_subject_id in enumerate(gt_subject_ids):
-            gt_subject_ids_res[idx] = ((od_pos_inds == gt_subject_id).nonzero(
-                as_tuple=True)[0])
-        gt_subject_ids = gt_subject_ids_res
+        # gt_subject_ids_res = torch.zeros_like(gt_subject_ids)
+        # for idx, gt_subject_id in enumerate(gt_subject_ids):
+        #     gt_subject_ids_res[idx] = ((od_pos_inds == gt_subject_id).nonzero(
+        #         as_tuple=True)[0])
+        # gt_subject_ids = gt_subject_ids_res
 
         gt_object_ids = gt_object_ids[pos_inds]
-        gt_object_ids_res = torch.zeros_like(gt_object_ids)
-        for idx, gt_object_id in enumerate(gt_object_ids):
-            gt_object_ids_res[idx] = ((od_pos_inds == gt_object_id).nonzero(
-                as_tuple=True)[0])
-        gt_object_ids = gt_object_ids_res
+        # gt_object_ids_res = torch.zeros_like(gt_object_ids)
+        # for idx, gt_object_id in enumerate(gt_object_ids):
+        #     gt_object_ids_res[idx] = ((od_pos_inds == gt_object_id).nonzero(
+        #         as_tuple=True)[0])
+        # gt_object_ids = gt_object_ids_res
 
         filtered_subject_scores = subject_scores[pos_inds]
-        filtered_subject_scores = filtered_subject_scores[:, od_pos_inds]
+        # filtered_subject_scores = filtered_subject_scores[:, od_pos_inds]
         filtered_object_scores = object_scores[pos_inds]
-        filtered_object_scores = filtered_object_scores[:, od_pos_inds]
+        # filtered_object_scores = filtered_object_scores[:, od_pos_inds]
 
         # label targets
         s_labels = gt_sub_bboxes.new_full(
@@ -1476,10 +1630,48 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         if gt_labels is None:
             loss_inputs = outs + (gt_rels, gt_bboxes, gt_masks, img_metas)
         else:
+            gt_labels, gt_masks = self.preprocess_gt(gt_labels, gt_masks,
+                                                 gt_semantic_seg, img_metas)
             loss_inputs = outs + (gt_rels, gt_bboxes, gt_labels, gt_masks,
                                   img_metas)
         losses = self.loss(*loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore)
         return losses
+
+    def preprocess_gt(self, gt_labels_list, gt_masks_list, gt_semantic_segs,
+                      img_metas):
+        """Preprocess the ground truth for all images.
+
+        Args:
+            gt_labels_list (list[Tensor]): Each is ground truth
+                labels of each bbox, with shape (num_gts, ).
+            gt_masks_list (list[BitmapMasks]): Each is ground truth
+                masks of each instances of a image, shape
+                (num_gts, h, w).
+            gt_semantic_seg (Tensor | None): Ground truth of semantic
+                segmentation with the shape (batch_size, n, h, w).
+                [0, num_thing_class - 1] means things,
+                [num_thing_class, num_class-1] means stuff,
+                255 means VOID. It's None when training instance segmentation.
+            img_metas (list[dict]): List of image meta information.
+
+        Returns:
+            tuple: a tuple containing the following targets.
+                - labels (list[Tensor]): Ground truth class indices\
+                    for all images. Each with shape (n, ), n is the sum of\
+                    number of stuff type and number of instance in a image.
+                - masks (list[Tensor]): Ground truth mask for each\
+                    image, each with shape (n, h, w).
+        """
+        num_things_list = [self.num_things_classes] * len(gt_labels_list)
+        num_stuff_list = [self.num_stuff_classes] * len(gt_labels_list)
+        if gt_semantic_segs is None:
+            gt_semantic_segs = [None] * len(gt_labels_list)
+
+        targets = multi_apply(preprocess_panoptic_gt, gt_labels_list,
+                              gt_masks_list, gt_semantic_segs, num_things_list,
+                              num_stuff_list, img_metas)
+        labels, masks = targets
+        return labels, masks
 
     @force_fp32(apply_to=('all_cls_scores_list', 'all_bbox_preds_list'))
     def get_bboxes(self, cls_scores, bbox_preds, img_metas, rescale=False):
@@ -1514,7 +1706,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             # bbox_pred = bbox_preds['bbox'][-1, img_id, ...]
             # mask_pred = bbox_preds['mask'][img_id, ...]
             all_cls_score = cls_scores['cls'][-1, img_id, ...]
-            all_masks = bbox_preds['mask'][img_id, ...]
+            all_masks = bbox_preds['mask'][img_id]
 
             s_cls_score = cls_scores['sub'][-1, img_id, ...]
             o_cls_score = cls_scores['obj'][-1, img_id, ...]
@@ -1523,8 +1715,8 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             o_bbox_pred = bbox_preds['obj'][-1, img_id, ...]
             img_shape = img_metas[img_id]['img_shape']
             scale_factor = img_metas[img_id]['scale_factor']
-            s_mask_pred = bbox_preds['sub_seg'][img_id, ...]
-            o_mask_pred = bbox_preds['obj_seg'][img_id, ...]
+            s_mask_pred = bbox_preds['sub_seg'][img_id]
+            o_mask_pred = bbox_preds['obj_seg'][img_id]
             triplet_sub_ids = cls_scores['sub_ids'][img_id]
             triplet_obj_ids = cls_scores['obj_ids'][img_id]
             triplets = self._get_bboxes_single(all_masks, all_cls_score,
@@ -1563,7 +1755,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                      round(img_shape[1] / scale_factor[0]))
         max_per_img = self.test_cfg.get('max_per_img', self.num_obj_query)
 
-        assert self.rel_loss_cls.use_sigmoid == False
+        # assert self.rel_loss_cls.use_sigmoid == False
         assert len(s_cls_score) == len(r_cls_score)
 
         # 0-based label input for objects and self.num_classes as default background cls
@@ -1581,9 +1773,13 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         o_scores, o_labels = o_logits.max(-1)
 
         # r_lgs = F.softmax(r_cls_score, dim=-1) - self.logit_adj_tau * self.psg_rel_freq
-        r_lgs = F.softmax(r_cls_score - self.logit_adj_tau * self.psg_rel_freq, dim=-1)
-        r_logits = r_lgs[..., 1:]
-        r_scores, r_indexes = r_logits.reshape(-1).topk(max_per_img)
+        if self.rel_loss_cls.use_sigmoid == True:
+            r_logits = r_cls_score.sigmoid()
+            r_lgs = torch.cat([torch.zeros_like(r_logits[...,:1]), r_logits],-1)
+        else:
+            r_lgs = F.softmax(r_cls_score - self.logit_adj_tau * self.psg_rel_freq, dim=-1)
+            r_logits = r_lgs[..., 1:]
+        r_scores, r_indexes = r_logits.reshape(-1).topk(max_per_img*2)
         r_labels = r_indexes % self.num_relations + 1
         triplet_index = r_indexes // self.num_relations
 
@@ -1598,6 +1794,10 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         r_dists = r_lgs.reshape(
             -1, self.num_relations +
             1)[triplet_index]  #### NOTE: to match the evaluation in vg
+        # one hot for evaluation
+        r_dists = torch.zeros_like(r_dists)
+        for ids in range(len(triplet_index)):
+            r_dists[ids][r_labels[ids]] = 1
 
         labels = torch.cat((s_labels, o_labels), 0)
         complete_labels = labels
@@ -1606,6 +1806,8 @@ class DeformableLGDFormerHead(AnchorFreeHead):
 
         if self.use_mask:
             object_mask_thr = self.test_cfg.get('object_mask_thr', 0.8)
+            iou_thr = self.test_cfg.get('iou_thr', 0.8)
+            filter_low_score = self.test_cfg.get('filter_low_score', False)
             s_mask_pred = s_mask_pred[triplet_index]
             o_mask_pred = o_mask_pred[triplet_index]
             s_mask_pred = F.interpolate(s_mask_pred.unsqueeze(1),
@@ -1618,30 +1820,35 @@ class DeformableLGDFormerHead(AnchorFreeHead):
 
             all_scores, all_labels = all_cls_score.sigmoid().max(-1) # use sigmoid
             all_masks = F.interpolate(all_masks.unsqueeze(1),
-                                      size=mask_size).squeeze(1)
+                                    size=mask_size,mode='bilinear',
+                                    align_corners=False).squeeze(1)
             #### for panoptic postprocessing ####
             triplet_sub_ids = triplet_sub_ids[triplet_index].view(-1,1)
             triplet_obj_ids = triplet_obj_ids[triplet_index].view(-1,1)
             pan_rel_pairs = torch.cat((triplet_sub_ids,triplet_obj_ids), -1).to(torch.int).to(all_masks.device)
-            tri_obj_unique = pan_rel_pairs.unique() # equal to: pan_rel_pairs.view(-1).unique()
-            keep = (all_labels != self.num_classes) #& (all_scores > object_mask_thr) # why minus 1
-            tmp = torch.zeros_like(keep, dtype=torch.bool)
-            for id in tri_obj_unique:
-                tmp[id] = True
-            keep = keep & tmp
+            # tri_obj_unique = pan_rel_pairs.unique() # equal to: pan_rel_pairs.view(-1).unique()
+            # keep = (all_labels != self.num_classes) #& (all_scores > object_mask_thr) # why minus 1
+            # tmp = torch.zeros_like(keep, dtype=torch.bool)
+            # for id in tri_obj_unique:
+            #     tmp[id] = True
+            # keep = keep & tmp
 
-            all_labels = all_labels[keep]
-            all_masks = all_masks[keep]
-            all_scores = all_scores[keep]
+            keep_ent = (all_labels != self.num_classes) & (all_scores > object_mask_thr)
+            all_labels = all_labels[keep_ent]
+            all_masks = all_masks[keep_ent]
+            all_scores = all_scores[keep_ent]
             h, w = all_masks.shape[-2:]
 
             no_obj_filter = torch.zeros(pan_rel_pairs.shape[0],dtype=torch.bool)
             for triplet_id in range(pan_rel_pairs.shape[0]):
-                if keep[pan_rel_pairs[triplet_id,0]] and keep[pan_rel_pairs[triplet_id,1]]:
+                if keep_ent[pan_rel_pairs[triplet_id,0]] and keep_ent[pan_rel_pairs[triplet_id,1]]:
                     no_obj_filter[triplet_id]=True
             pan_rel_pairs = pan_rel_pairs[no_obj_filter]
-            if keep.sum() != len(keep):
-                for new_id, past_id in enumerate(keep.nonzero().view(-1)):
+            # if keep.sum() != len(keep):
+            #     for new_id, past_id in enumerate(keep.nonzero().view(-1)):
+            #         pan_rel_pairs.masked_fill_(pan_rel_pairs.eq(past_id), new_id)
+            if keep_ent.sum() != len(keep_ent):
+                for new_id, past_id in enumerate(keep_ent.nonzero().view(-1)):
                     pan_rel_pairs.masked_fill_(pan_rel_pairs.eq(past_id), new_id)
             r_labels, r_dists = r_labels[no_obj_filter], r_dists[no_obj_filter]
 
@@ -1683,7 +1890,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                     if len(pred_ids) == 1:
                         thing_dedup[pred_ids[0]].append(pred_ids[0])
                 
-                all_binary_masks = (torch.sigmoid(all_masks) > 0.85).to(torch.float)
+                all_binary_masks = (torch.sigmoid(all_masks) > 0.5).to(torch.float)
                 # create dict that groups duplicate masks
                 for thing_pred_ids in thing_classes.values():
                     if len(thing_pred_ids) > 1:
@@ -1695,7 +1902,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                     # This helper function creates the final panoptic segmentation image
                     # It also returns the area of the masks that appears on the image
 
-                    m_id = all_masks.transpose(0, 1).softmax(-1)
+                    m_id = all_masks.transpose(0, 1).sigmoid()
 
                     if m_id.shape[-1] == 0:
                         # We didn't detect any mask :(
@@ -1762,10 +1969,10 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                             dedup_rel_index[r_index] = True
                     
                     # rels = torch.as_tensor(dedup_rels_hand, dtype=rels.dtype, device=rels.device)
-                    rels = rels[dedup_rel_index]
-                    r_labels = r_labels[dedup_rel_index]
-                    r_dists = r_dists[dedup_rel_index]
-                    pan_rel_pairs = pan_rel_pairs[dedup_rel_index]
+                    rels = rels[dedup_rel_index][:max_per_img]
+                    r_labels = r_labels[dedup_rel_index][:max_per_img]
+                    r_dists = r_dists[dedup_rel_index][:max_per_img]
+                    pan_rel_pairs = pan_rel_pairs[dedup_rel_index][:max_per_img]
 
 
 
@@ -1817,6 +2024,117 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         outs = self.forward(feats, img_metas, enc_memory, mlvl_enc_memory, entity_query_embedding, entity_all_bbox_preds, entity_all_cls_scores)
         results_list = self.get_bboxes(*outs, img_metas, rescale=rescale)
         return results_list
+
+    def vis_reference_points(self, img, reference_points, img_metas, sub_outputs_coord, obj_outputs_coord, rel_outputs_class):
+        import cv2
+        import numpy as np
+        predicate_classes = [
+            'over',
+            'in front of',
+            'beside',
+            'on',
+            'in',
+            'attached to',
+            'hanging from',
+            'on back of',
+            'falling off',
+            'going down',
+            'painted on',
+            'walking on',
+            'running on',
+            'crossing',
+            'standing on',
+            'lying on',
+            'sitting on',
+            'flying over',
+            'jumping over',
+            'jumping from',
+            'wearing',
+            'holding',
+            'carrying',
+            'looking at',
+            'guiding',
+            'kissing',
+            'eating',
+            'drinking',
+            'feeding',
+            'biting',
+            'catching',
+            'picking',
+            'playing with',
+            'chasing',
+            'climbing',
+            'cleaning',
+            'playing',
+            'touching',
+            'pushing',
+            'pulling',
+            'opening',
+            'cooking',
+            'talking to',
+            'throwing',
+            'slicing',
+            'driving',
+            'riding',
+            'parked on',
+            'driving on',
+            'about to hit',
+            'kicking',
+            'swinging',
+            'entering',
+            'exiting',
+            'enclosing',
+            'leaning on',
+        ]
+        for im, reference_points_per, img_meta, sub_coords, obj_coords, rel_cls in zip(img, reference_points[-1], img_metas, sub_outputs_coord, obj_outputs_coord, rel_outputs_class):
+            if self.rel_loss_cls.use_sigmoid == True:
+                r_logits = rel_cls.sigmoid()
+            else:
+                r_lgs = F.softmax(rel_cls, dim=-1)
+                r_logits = r_lgs[..., 1:]
+            # r_scores, r_indexes = r_logits.reshape(-1).topk(10)
+            # r_labels = r_indexes % self.num_relations + 1
+            # triplet_index = r_indexes // self.num_relations
+            r_scores, r_indexes = r_logits.max(-1)
+            topk_scores, topk_indexes = r_scores.topk(10)
+            r_labels = r_indexes[topk_indexes] + 1
+            triplet_index = topk_indexes
+            sub_coords_xyxy = bbox_cxcywh_to_xyxy(sub_coords)
+            obj_coords_xyxy = bbox_cxcywh_to_xyxy(obj_coords)
+            for i,index in enumerate(triplet_index):
+                img_name = 'work_dirs/debugs/' + img_meta['filename'].split('/')[-1].split('.')[0]+f'_{index}.jpg'
+                unorm = UnNormalize(mean=img_meta['img_norm_cfg']['mean'], std=img_meta['img_norm_cfg']['std'])
+                im_output = unorm(im.clone()).cpu().clamp_(0, 255).permute(1, 2, 0).type(torch.uint8).numpy()
+                im_output = cv2.cvtColor(im_output, cv2.COLOR_RGB2BGR)
+
+                if reference_points_per.shape[-1] == 2:
+                    ref = reference_points_per[index:index+1,0,:].clone().detach().cpu().numpy()
+                    im_size = np.array(img_meta['img_shape'][:2])
+                    ori_coord = np.array(ref*im_size[::-1],dtype=np.int)
+
+                    for ref in ori_coord:
+                        cv2.circle(im_output,ref,5,(0,0,255),-1)
+                else:
+                    ref = reference_points_per[index:index+1,0,:].clone().detach().cpu().numpy()
+                    im_size = np.array(img_meta['img_shape'][:2])
+                    ori_coord = np.array(ref*np.concatenate((im_size[::-1],im_size[::-1]),axis=-1),dtype=np.int)
+
+                    for ref in ori_coord:
+                        cv2.rectangle(im_output, ref[:2], ref[2:], (0,0,255), 2)
+                
+                sub = sub_coords_xyxy[index].clone().detach().cpu().numpy()
+                im_size = np.array(img_meta['img_shape'][:2])
+                ori_coord = np.array(sub*np.concatenate((im_size[::-1],im_size[::-1]),axis=-1),dtype=np.int)
+                cv2.rectangle(im_output, ori_coord[:2], ori_coord[2:], (255,0,0), 2)
+
+                obj = obj_coords_xyxy[index].clone().detach().cpu().numpy()
+                im_size = np.array(img_meta['img_shape'][:2])
+                ori_coord = np.array(obj*np.concatenate((im_size[::-1],im_size[::-1]),axis=-1),dtype=np.int)
+                cv2.rectangle(im_output, ori_coord[:2], ori_coord[2:], (255,0,0), 2)
+
+                cv2.putText(im_output, predicate_classes[r_labels[i]-1], (ref[:2] + ref[2:]) // 2, cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
+
+                cv2.imwrite(img_name, im_output)
 
 
 class MLP(nn.Module):
@@ -1979,3 +2297,21 @@ def interpolate(input,
     else:
         return torchvision.ops.misc.interpolate(input, size, scale_factor,
                                                 mode, align_corners)
+
+
+class UnNormalize(object):
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, tensor):
+        """
+        Args:
+            tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
+        Returns:
+            Tensor: Normalized image.
+        """
+        for t, m, s in zip(tensor, self.mean, self.std):
+            t.mul_(s).add_(m)
+            # The normalize code -> t.sub_(m).div_(s)
+        return tensor
