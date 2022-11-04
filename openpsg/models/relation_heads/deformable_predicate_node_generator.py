@@ -193,6 +193,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
         spatial_shapes=None,
         level_start_index=None,
         reference_points=None,
+        ent_hs_masks=None,
     ):
         """
             Args:
@@ -222,7 +223,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
             query_embed_obj_init,
             query_embed_sub_init,
             query_embed_rel_init,
-        ) = self.query_tgt_initialization(ent_hs, ent_coords)
+        ) = self.query_tgt_initialization(ent_hs, ent_coords, ent_hs_masks=ent_hs_masks)
 
         (rel_tgt, ent_obj_tgt, ent_sub_tgt) = self.reset_tgt()
 
@@ -318,7 +319,9 @@ class Deformable_Predicate_Node_Generator(BaseModule):
                     ent_hs_input, 
                     query_embed_obj_init if self.intra_self_attention is None else None,
                     query_embed_sub_init if self.intra_self_attention is None else None,
-                    ent_obj_tgt, ent_sub_tgt, start, idx, rel_hs_out, shared_encoder_memory, src_pos_embed, mask_flatten, valid_ratios, spatial_shapes, level_start_index
+                    ent_obj_tgt, ent_sub_tgt, start, idx, rel_hs_out, shared_encoder_memory, 
+                    src_pos_embed, mask_flatten, valid_ratios, spatial_shapes, level_start_index,
+                    ent_hs_masks=ent_hs_masks,
                 )
                 ent_obj_tgt = ent_sub_dec_outputs['obj_ent_hs']
                 ent_sub_tgt = ent_sub_dec_outputs['sub_ent_hs']
@@ -387,7 +390,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
                 rel_memory = shared_encoder_memory
         return rel_memory
 
-    def query_tgt_initialization(self, ent_hs, ent_coords):
+    def query_tgt_initialization(self, ent_hs, ent_coords, ent_hs_masks=None):
         """
         apply the dynamic query into the rel_query
         """
@@ -417,7 +420,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
 
         if self.dynamic_query_on:
             dynamic_query = self.dynamic_predicate_query_generation(
-                query_embed_rel_init_w, ent_hs, ent_coords
+                query_embed_rel_init_w, ent_hs, ent_coords, ent_hs_masks=ent_hs_masks
             )
             seq_len, bs, dim = dynamic_query.shape  # seq_len, bz, dim
             dynamic_query = dynamic_query.reshape(seq_len, bs, 3, dim // 3).transpose(
@@ -447,7 +450,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
 
         return query_embed_obj_init, query_embed_sub_init, query_embed_rel_init
 
-    def dynamic_predicate_query_generation(self, query_embed, ent_hs, ent_coords=None, rel_q_gen=None):
+    def dynamic_predicate_query_generation(self, query_embed, ent_hs, ent_coords=None, rel_q_gen=None, ent_hs_masks=None):
         if ent_coords is not None:
             ent_coords_embd = self.ent_pos_sine_proj(
                 gen_sineembed_for_position(ent_coords[..., :2], self.embed_dims // 2)
@@ -456,7 +459,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
             ent_coords_embd = ent_coords_embd.transpose(1, 0)
             if rel_q_gen is None:
                 rel_q_gen = self.rel_q_gen
-            query_embed = rel_q_gen(query_embed, ent_hs + ent_coords_embd, ent_hs + ent_coords_embd)[0]
+            query_embed = rel_q_gen(query_embed, ent_hs + ent_coords_embd, ent_hs + ent_coords_embd, key_padding_mask=ent_hs_masks)[0]
         else:
             # The box of Stuff will confuse the query feature
             ent_hs = ent_hs[-1].transpose(1, 0)
@@ -507,7 +510,8 @@ class Deformable_Predicate_Node_Generator(BaseModule):
             mask_flatten,
             valid_ratios, 
             spatial_shapes, 
-            level_start_index
+            level_start_index,
+            ent_hs_masks=None,
     ):
         rel_hs_out_obj_hs = []
         rel_hs_out_sub_hs = []
@@ -558,7 +562,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
                     ent_sub_output_dict_enh,
                     ent_hs_input,
                     ent_hs_input,
-                    key_padding_mask=None,
+                    key_padding_mask=ent_hs_masks,
                     key_pos=None,
                     query_pos=query_pos_embed_sub,
                 )
@@ -567,7 +571,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
                     ent_obj_output_dict_enh,
                     ent_hs_input,
                     ent_hs_input,
-                    key_padding_mask=None,
+                    key_padding_mask=ent_hs_masks,
                     key_pos=None,
                     query_pos=query_pos_embed_obj,
                 )
@@ -597,7 +601,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
                     ent_sub_tgt,
                     ent_hs_input,
                     ent_hs_input,
-                    key_padding_mask=None,
+                    key_padding_mask=ent_hs_masks,
                     key_pos=None,
                     query_pos=query_pos_embed_sub,
                 )
@@ -606,7 +610,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
                     ent_obj_tgt,
                     ent_hs_input,
                     ent_hs_input,
-                    key_padding_mask=None,
+                    key_padding_mask=ent_hs_masks,
                     key_pos=None,
                     query_pos=query_pos_embed_obj,
                 )

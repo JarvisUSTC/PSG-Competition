@@ -436,7 +436,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         reference_points = reference_points[:, :, None] * valid_ratios[:, None]
         return reference_points
 
-    def forward(self, feats, img_metas, enc_memory, mlvl_enc_memory, entity_query_embedding, entity_all_bbox_preds, entity_all_cls_scores, train_mode=False):
+    def forward(self, feats, img_metas, enc_memory, mlvl_enc_memory, entity_query_embedding, entity_all_bbox_preds, entity_all_cls_scores, train_mode=False, query_masks=None):
         """
         input from panoptic head:
             memory: from deformable encoder
@@ -536,6 +536,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             spatial_shapes=spatial_shapes,
             level_start_index=level_start_index,
             reference_points=reference_points,
+            ent_hs_masks=query_masks,
         )
 
         outs_rel_dec = rel_hs.feature
@@ -606,9 +607,6 @@ class DeformableLGDFormerHead(AnchorFreeHead):
 
             obj_query_mask_embed = self.obj_mask_head(outs_rel_dec_ent_aware_obj)
             outputs_obj_seg_masks_aux = torch.einsum('sbqc, bchw -> sbqhw', obj_query_mask_embed, img_feat)
-            # ### For debug TODO
-            # outputs_obj_seg_masks_aux = seg_masks[:,:self.num_rel_query]
-            # outputs_sub_seg_masks_aux = seg_masks[:,:self.num_rel_query]
 
         #### relation-oriented search
         # subject_scores = torch.matmul(
@@ -619,8 +617,15 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             rel_q_normalized_sub, sub_q_normalized.transpose(1, 2)) / self.temp
         object_scores = torch.matmul(
             rel_q_normalized_obj, obj_q_normalized.transpose(1, 2)) / self.temp
-        _, subject_ids = subject_scores.max(-1)
-        _, object_ids = object_scores.max(-1)
+        if query_masks is not None:
+            scores_mask = ~query_masks[None].repeat(self.num_rel_query, 1, 1).transpose(0,1)
+            subject_scores_tmp = subject_scores.softmax(-1)*scores_mask
+            object_scores_tmp = object_scores.softmax(-1)*scores_mask
+            _, subject_ids = subject_scores_tmp.max(-1)
+            _, object_ids = object_scores_tmp.max(-1)
+        else:
+            _, subject_ids = subject_scores.max(-1)
+            _, object_ids = object_scores.max(-1)
 
         # prediction
         sub_outputs_class = torch.empty_like(outputs_class[:,:,:1].repeat(1,1,self.num_rel_query,1))
@@ -683,7 +688,8 @@ class DeformableLGDFormerHead(AnchorFreeHead):
              gt_labels_list,
              gt_masks_list,
              img_metas,
-             gt_bboxes_ignore=None):
+             gt_bboxes_ignore=None,
+             query_masks=None):
 
         # NOTE defaultly only the outputs from the last feature scale is used.
         all_cls_scores = all_cls_scores_list
@@ -738,6 +744,8 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         subject_scores = [subject_scores for _ in range(num_dec_layers)]
         object_scores = [object_scores for _ in range(num_dec_layers)]
 
+        query_masks_list = [query_masks for _ in range(num_dec_layers)]
+
         r_losses_cls, loss_subject_match, loss_object_match, \
         s_losses_cls, o_losses_cls, s_losses_bbox, o_losses_bbox, \
         s_losses_iou, o_losses_iou, s_dice_losses, o_dice_losses, s_mask_losses, o_mask_losses, rel_s_o_losses_bbox= multi_apply(
@@ -748,7 +756,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
             all_gt_masks_list, img_metas_list, 
             all_r_cls_scores_sub_aux, all_r_cls_scores_obj_aux, 
             all_s_bbox_preds_aux, all_o_bbox_preds_aux, all_s_mask_preds_aux, 
-            all_o_mask_preds_aux, all_rel_s_o_bbox_preds_aux, all_gt_bboxes_ignore_list,)
+            all_o_mask_preds_aux, all_rel_s_o_bbox_preds_aux, all_gt_bboxes_ignore_list,query_masks_list)
 
         # r_losses_cls, loss_subject_match, loss_object_match, \
         # s_losses_cls, o_losses_cls, s_losses_bbox, o_losses_bbox, \
@@ -846,14 +854,19 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                     s_mask_preds_aux, 
                     o_mask_preds_aux,
                     rel_s_o_bbox_preds_aux,
-                    gt_bboxes_ignore_list=None):
+                    gt_bboxes_ignore_list=None,
+                    query_masks_list=None):
 
         ## before get targets
         num_imgs = r_cls_scores.size(0)
+        if query_masks_list is not None:
+            num_ent_per_img = (~query_masks_list).sum(-1)
+        else:
+            num_ent_per_img = [od_cls_scores.shape[1]]*num_imgs
         # obj det&seg
-        cls_scores_list = [od_cls_scores[i] for i in range(num_imgs)]
-        bbox_preds_list = [od_bbox_preds[i] for i in range(num_imgs)]
-        mask_preds_list = [mask_preds[i] for i in range(num_imgs)]
+        cls_scores_list = [od_cls_scores[i][:num_ent_per_img[i]] for i in range(num_imgs)]
+        bbox_preds_list = [od_bbox_preds[i][:num_ent_per_img[i]] for i in range(num_imgs)]
+        mask_preds_list = [mask_preds[i][:num_ent_per_img[i]] for i in range(num_imgs)]
 
         # scene graph
         r_cls_scores_list = [r_cls_scores[i] for i in range(num_imgs)]
@@ -872,8 +885,8 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         rel_s_o_bbox_preds_aux_list = [rel_s_o_bbox_preds_aux[i] for i in range(num_imgs)]
 
         # matche scores
-        subject_scores_list = [subject_scores[i] for i in range(num_imgs)]
-        object_scores_list = [object_scores[i] for i in range(num_imgs)]
+        subject_scores_list = [subject_scores[i][:,:num_ent_per_img[i]] for i in range(num_imgs)]
+        object_scores_list = [object_scores[i][:,:num_ent_per_img[i]] for i in range(num_imgs)]
 
         cls_reg_targets = self.get_targets(
             subject_scores_list, object_scores_list, cls_scores_list,
@@ -1606,6 +1619,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                       gt_semantic_seg=None,
                       gt_bboxes_ignore=None,
                       proposal_cfg=None,
+                      query_masks=None,
                       **kwargs):
         """Forward function for training mode.
 
@@ -1621,12 +1635,13 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                 ignored, shape (num_ignored_gts, 4).
             proposal_cfg (mmcv.Config): Test / postprocessing configuration,
                 if None, test_cfg would be used.
+            query_masks (Tensor): Support variable query numbers in different images
 
         Returns:
             dict[str, Tensor]: A dictionary of loss components.
         """
         assert proposal_cfg is None, '"proposal_cfg" must be None'
-        outs = self(x, img_metas, enc_memory, mlvl_enc_memory, entity_query_embedding, entity_all_bbox_preds, entity_all_cls_scores)
+        outs = self(x, img_metas, enc_memory, mlvl_enc_memory, entity_query_embedding, entity_all_bbox_preds, entity_all_cls_scores, query_masks=query_masks)
         if gt_labels is None:
             loss_inputs = outs + (gt_rels, gt_bboxes, gt_masks, img_metas)
         else:
@@ -1634,7 +1649,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                                                  gt_semantic_seg, img_metas)
             loss_inputs = outs + (gt_rels, gt_bboxes, gt_labels, gt_masks,
                                   img_metas)
-        losses = self.loss(*loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore)
+        losses = self.loss(*loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore, query_masks=query_masks)
         return losses
 
     def preprocess_gt(self, gt_labels_list, gt_masks_list, gt_semantic_segs,

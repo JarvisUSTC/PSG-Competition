@@ -89,6 +89,7 @@ class DeformablePSGTr(SingleStageDetector):
                  train_cfg=None,
                  test_cfg=None,
                  pretrained=None,
+                 Padding=False,
                  init_cfg=None,
                  DEBUG=False):
         super(DeformablePSGTr, self).__init__(backbone, neck, bbox_head, train_cfg,
@@ -115,6 +116,7 @@ class DeformablePSGTr(SingleStageDetector):
         self.num_things_classes = self.panoptic_head.num_things_classes
         self.num_stuff_classes = self.panoptic_head.num_stuff_classes
         self.num_classes = self.panoptic_head.num_classes
+        self.padding = Padding # For variable query number in a batch
 
     # over-write `forward_dummy` because:
     # the forward of bbox_head requires img_metas
@@ -171,34 +173,62 @@ class DeformablePSGTr(SingleStageDetector):
         # start.record()
         losses = dict()
         if self.panoptic_head.topk_for_relation == -1:
-            def sum_dict(list_dict):
-                temp = list_dict[0]
-                for each_d in list_dict[1:]:
-                    for key in temp.keys() | each_d.keys():
-                        temp[key] = sum([d.get(key, 0) for d in (temp, each_d)])
-                for key in temp.keys():
-                    temp[key] = temp[key] / len(list_dict) # average
-                return temp
-            # gt matched
-            loss_b = []
-            bbox = entity_all_bbox_preds['bbox']
-            mask = entity_all_bbox_preds['mask']
-            cls = entity_all_cls_scores['cls']
-                        
-            # & statistic the max len of queries
-            query_len_list = [bbox[img_i].shape[2] for img_i in range(len(bbox))]
-            max_query_num = max(query_len_list)
+            if self.padding:
 
-            for img_i in range(len(bbox)):
-                entity_all_bbox_preds = dict(bbox=bbox[img_i], mask=[[mask[-1][img_i]]])
-                entity_all_cls_scores = dict(cls=cls[img_i])
-                x_i = [x[i][img_i:img_i+1] for i in range(len(x))]
-                loss_i = self.bbox_head.forward_train(x_i, img[img_i:img_i+1], [img_metas[img_i]], entity_query_embedding[img_i], enc_memory[img_i:img_i+1], mlvl_enc_memory[:,img_i:img_i+1],
-                                              entity_all_bbox_preds, entity_all_cls_scores, [gt_rels[img_i]], [gt_bboxes[img_i]],
-                                              [gt_labels[img_i]], [gt_masks[img_i]], gt_semantic_seg[img_i:img_i+1],
-                                              gt_bboxes_ignore)
-                loss_b.append(loss_i)
-            losses.update(sum_dict(loss_b))
+                bbox = entity_all_bbox_preds['bbox']
+                mask = entity_all_bbox_preds['mask']
+                cls = entity_all_cls_scores['cls']
+                # & statistic the max len of queries
+                query_len_list = [bbox[img_i].shape[2] for img_i in range(len(bbox))]
+                max_query_num = max(query_len_list)
+
+                # & support padding
+                pad_bbox = []
+                pad_mask = []
+                pad_cls = []
+                pad_entity_query_embedding = []
+                query_masks = torch.ones((len(bbox), max_query_num), dtype=torch.bool).to(bbox[0].device)
+                for img_i in range(len(bbox)):
+                    pad_num = max_query_num-query_len_list[img_i]
+                    pad_bbox.append(torch.cat([bbox[img_i], bbox[img_i][:,:,:1,:].repeat(1,1,pad_num, 1)],dim=2))
+                    pad_mask.append(torch.cat([mask[-1][img_i], mask[-1][img_i][:1,:,:].repeat(pad_num,1,1)], dim=0))
+                    pad_cls.append(torch.cat([cls[img_i], cls[img_i][:,:,:1,:].repeat(1,1,pad_num, 1)],dim=2))
+                    pad_entity_query_embedding.append(torch.cat([entity_query_embedding[img_i], entity_query_embedding[img_i][:,:,:1,:].repeat(1,1,pad_num, 1)],dim=2))
+                    query_masks[img_i,:query_len_list[img_i]] = False
+
+                entity_all_bbox_preds = dict(bbox=torch.cat(pad_bbox, dim=1), mask=[pad_mask])
+                entity_all_cls_scores = dict(cls=torch.cat(pad_cls, dim=1))
+                entity_query_embedding = torch.cat(pad_entity_query_embedding, dim=1)
+
+                losses = self.bbox_head.forward_train(x, img, img_metas, entity_query_embedding, enc_memory, mlvl_enc_memory,
+                                                entity_all_bbox_preds, entity_all_cls_scores, gt_rels, gt_bboxes,
+                                                gt_labels, gt_masks, gt_semantic_seg,
+                                                gt_bboxes_ignore, query_masks=query_masks)
+            else:
+                def sum_dict(list_dict):
+                    temp = list_dict[0]
+                    for each_d in list_dict[1:]:
+                        for key in temp.keys() | each_d.keys():
+                            temp[key] = sum([d.get(key, 0) for d in (temp, each_d)])
+                    for key in temp.keys():
+                        temp[key] = temp[key] / len(list_dict) # average
+                    return temp
+                # gt matched
+                loss_b = []
+                bbox = entity_all_bbox_preds['bbox']
+                mask = entity_all_bbox_preds['mask']
+                cls = entity_all_cls_scores['cls']
+
+                for img_i in range(len(bbox)):
+                    entity_all_bbox_preds = dict(bbox=bbox[img_i], mask=[[mask[-1][img_i]]])
+                    entity_all_cls_scores = dict(cls=cls[img_i])
+                    x_i = [x[i][img_i:img_i+1] for i in range(len(x))]
+                    loss_i = self.bbox_head.forward_train(x_i, img[img_i:img_i+1], [img_metas[img_i]], entity_query_embedding[img_i], enc_memory[img_i:img_i+1], mlvl_enc_memory[:,img_i:img_i+1],
+                                                entity_all_bbox_preds, entity_all_cls_scores, [gt_rels[img_i]], [gt_bboxes[img_i]],
+                                                [gt_labels[img_i]], [gt_masks[img_i]], gt_semantic_seg[img_i:img_i+1],
+                                                gt_bboxes_ignore)
+                    loss_b.append(loss_i)
+                losses.update(sum_dict(loss_b))
         else:
             losses = self.bbox_head.forward_train(x, img, img_metas, entity_query_embedding, enc_memory, mlvl_enc_memory,
                                                 entity_all_bbox_preds, entity_all_cls_scores, gt_rels, gt_bboxes,
