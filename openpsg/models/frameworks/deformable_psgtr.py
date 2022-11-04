@@ -184,6 +184,11 @@ class DeformablePSGTr(SingleStageDetector):
             bbox = entity_all_bbox_preds['bbox']
             mask = entity_all_bbox_preds['mask']
             cls = entity_all_cls_scores['cls']
+                        
+            # & statistic the max len of queries
+            query_len_list = [bbox[img_i].shape[2] for img_i in range(len(bbox))]
+            max_query_num = max(query_len_list)
+
             for img_i in range(len(bbox)):
                 entity_all_bbox_preds = dict(bbox=bbox[img_i], mask=[[mask[-1][img_i]]])
                 entity_all_cls_scores = dict(cls=cls[img_i])
