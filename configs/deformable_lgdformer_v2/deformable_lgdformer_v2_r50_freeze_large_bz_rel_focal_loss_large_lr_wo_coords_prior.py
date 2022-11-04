@@ -163,7 +163,7 @@ model = dict(
             entities_aware_decoder=dict(
                 num_layers=3
             ),
-            no_coords_prior=False,
+            no_coords_prior=True,
         ),
         box_assigner=dict(
             mask_cost=dict(weight=2.0), 
@@ -286,7 +286,7 @@ lr_config = dict(policy='step', step=10)
 runner = dict(type='EpochBasedRunner', max_epochs=12)
 
 project_name = 'deformable_lgdformer_v2'
-expt_name = 'deformable_lgdformer_v2_r50_freeze_bz_10_rel_focal_loss_2e-4'
+expt_name = 'deformable_lgdformer_v2_r50_freeze_bz_10_rel_focal_loss_2e-4_no_coords_prior'
 entity = 'psgyyds'
 work_dir = f'./work_dirs/{expt_name}'
 checkpoint_config = dict(interval=1, max_keep_ckpts=15, create_symlink=False)

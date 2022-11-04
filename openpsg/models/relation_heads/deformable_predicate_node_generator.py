@@ -74,6 +74,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
         intra_self_attention = None,
         update_query_by_rel_hs=False,
         no_coords_prior = False,
+        two_stage = False,
         init_cfg = None,
     ):
         super(Deformable_Predicate_Node_Generator, self).__init__(init_cfg=init_cfg)
@@ -166,6 +167,16 @@ class Deformable_Predicate_Node_Generator(BaseModule):
         self.rel_reference_points = _get_clones(self.rel_sub_obj_box_embed, self.num_decoder_layer)
         self.rel_reference_points_proposal = Linear(self.embed_dims, 2)
         del self.rel_sub_obj_box_embed
+
+        self.two_stage = two_stage
+        if self.two_stage:
+            # For 2D ref points
+            self.pos_trans_2d = nn.Linear(self.embed_dims, self.embed_dims)
+            self.pos_trans_norm_2d = nn.LayerNorm(self.embed_dims)
+
+            # For 4D ref boxes
+            self.pos_trans_4d = nn.Linear(self.embed_dims * 2, self.embed_dims)
+            self.pos_trans_norm_4d = nn.LayerNorm(self.embed_dims)
 
     def forward(
         self,
@@ -264,8 +275,19 @@ class Deformable_Predicate_Node_Generator(BaseModule):
                     raise NotImplementedError
                 if rel_reference_points.shape[-1] == 4:
                     reference_points_input = rel_reference_points[:, :, None] * torch.cat([valid_ratios,valid_ratios],-1)[:, None]
+                    if self.two_stage:
+                        query_embed_rel_init = self.pos_trans_norm_4d(
+                                                    self.pos_trans_4d(
+                                                        torch.cat([gen_sineembed_for_position(rel_reference_points[...,:2], self.embed_dims//2), \
+                                                        gen_sineembed_for_position(rel_reference_points[...,2:], self.embed_dims//2)], -1)
+                                                    )
+                                                ).permute(1,0,2)
                 else:
                     reference_points_input = rel_reference_points[:, :, None] * valid_ratios[:, None]
+                    if self.two_stage:
+                        query_embed_rel_init = self.pos_trans_norm_2d(
+                                                    self.pos_trans_2d(gen_sineembed_for_position(rel_reference_points[...,:2], self.embed_dims//2))
+                                                ).permute(1,0,2)
                 reference_points_output.append(reference_points_input)
                 predicate_sub_dec_output_dict = self.predicate_sub_decoder_layers[idx](
                     query=rel_tgt,

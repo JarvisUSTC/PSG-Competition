@@ -165,9 +165,6 @@ model = dict(
             ),
             no_coords_prior=False,
         ),
-        box_assigner=dict(
-            mask_cost=dict(weight=2.0), 
-            dice_cost=dict(weight=2.0)),
         sub_mask_loss=dict(loss_weight=2.0),
         sub_dice_loss=dict(loss_weight=2.0),
         obj_mask_loss=dict(loss_weight=2.0),
@@ -177,8 +174,18 @@ model = dict(
             use_sigmoid=True,
             gamma=2.0,
             alpha=0.25,
-            loss_weight=2.0),
-), )
+            loss_weight=4.0),
+    ),
+    train_cfg=dict(
+        box_assigner=dict(
+            mask_cost=dict(weight=2.0), 
+            dice_cost=dict(weight=2.0)),
+        id_assigner=dict(type='IdMatcher',
+            sub_id_cost=dict(weight=1.),
+            obj_id_cost=dict(weight=1.),
+            r_cls_cost=dict(weight=2.)),
+    ), 
+)
 
 img_norm_cfg = dict(mean=[123.675, 116.28, 103.53],
                     std=[58.395, 57.12, 57.375],
@@ -282,11 +289,11 @@ optimizer = dict(
 optimizer_config = dict(grad_clip=dict(max_norm=0.01, norm_type=2))
 
 # learning policy
-lr_config = dict(policy='step', step=10)
-runner = dict(type='EpochBasedRunner', max_epochs=12)
+lr_config = dict(policy='step', step=20)
+runner = dict(type='EpochBasedRunner', max_epochs=24)
 
 project_name = 'deformable_lgdformer_v2'
-expt_name = 'deformable_lgdformer_v2_r50_freeze_bz_10_rel_focal_loss_2e-4'
+expt_name = 'deformable_lgdformer_v2_r50_freeze_bz_10_rel_focal_loss_2e-4_rel_weightx2_24ep'
 entity = 'psgyyds'
 work_dir = f'./work_dirs/{expt_name}'
 checkpoint_config = dict(interval=1, max_keep_ckpts=15, create_symlink=False)

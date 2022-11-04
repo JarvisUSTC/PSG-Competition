@@ -32,6 +32,9 @@ def parse_args():
         "--output_path", help="output path on blob", type=str, required=True,
     )
     parser.add_argument(
+        "--resume_path", help="resumed pth path on blob", type=str, default='', required=False,
+    )
+    parser.add_argument(
         "--unparsed", help="unparsed", default="", type=str,
     )
     parser.add_argument(
@@ -273,6 +276,10 @@ def main():
     sp.run(cmd, shell=True, check=True)
 
     args.output_path = os.path.join("/blob", args.output_path)
+    if len(args.resume_path) != 0:
+        args.resume_from = os.path.join("/blob", args.resume_path)
+    else:
+        args.resume_from = None
     cmd = f"sudo ln -s {args.blob_root} /blob \n"
     print(cmd)
     sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
@@ -346,16 +353,28 @@ def main():
         dataset_names = args.dataset_names.split(",")
 
         cmd = f"export PATH={args.conda_prefix}/envs/{args.new_env_name}/bin:{args.conda_prefix}/condabin:$PATH \n"
-        cmd += (
-            f"python -m torch.distributed.launch "
-            f"--nproc_per_node=8 --master_port=29500 "
-            f"tools/train.py "
-            f"{args.config_file} "
-            f"--gpus 8 "
-            f"--launcher pytorch "
-            f"--resume-from {args.output_path}/epoch_12.pth "
-            f"--work-dir {args.output_path} 2>&1 |tee {args.output_path}/azure_log.txt"
-        )
+        if args.resume_from:
+            cmd += (
+                f"python -m torch.distributed.launch "
+                f"--nproc_per_node=8 --master_port=29500 "
+                f"tools/train.py "
+                f"{args.config_file} "
+                f"--gpus 8 "
+                f"--launcher pytorch "
+                f"--resume-from {args.resume_from} "
+                f"--work-dir {args.output_path} 2>&1 |tee {args.output_path}/azure_log.txt"
+            )
+        else:
+            cmd += (
+                f"python -m torch.distributed.launch "
+                f"--nproc_per_node=8 --master_port=29500 "
+                f"tools/train.py "
+                f"{args.config_file} "
+                f"--gpus 8 "
+                f"--launcher pytorch "
+                # f"--resume-from {args.output_path}/epoch_12.pth "
+                f"--work-dir {args.output_path} 2>&1 |tee {args.output_path}/azure_log.txt"
+            )
         print(cmd)
         sp.run(cmd, shell=True, check=True, cwd=args.working_dir)
 

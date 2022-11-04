@@ -1,0 +1,9 @@
+-f https://dl.fbaipublicfiles.com/detectron2/wheels/cu102/torch1.10/index.html
+detectron2
+terminaltables
+git+https://github.com/cocodataset/panopticapi.git
+pycocotools
+wandb
+h5py
+xmltodict
+graphviz

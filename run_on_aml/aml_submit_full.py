@@ -19,6 +19,9 @@ from azureml.core.runconfig import MpiConfiguration
 from azureml.core.compute import ComputeTarget
 from azureml.core.container_registry import ContainerRegistry
 from azureml.contrib.core.k8srunconfig import K8sComputeConfiguration
+from azureml.train.estimator import Estimator, Mpi
+from azureml.core.authentication import AzureCliAuthentication
+from azureml.contrib.aisc.aiscrunconfig import AISuperComputerConfiguration
 
 
 def make_container_registry(address, username, password):
@@ -31,40 +34,63 @@ def make_container_registry(address, username, password):
 
 def get_ws_ct(target):
     workspace_dict = {
+        # intern can't access these clusters
         # OCRA targets
         # https://ml.azure.com/compute/list/training?wsid=/subscriptions/b8da985a-830d-4d20-b9e5-8d4c0d798c7f/resourcegroups/Vision_GPU/workspaces/OCRA&tid=72f988bf-86f1-41af-91ab-2d7cd011db47
-        "NC24rsv3-prod": "run_on_aml/.azureml/OCRA.json",  # 4x 16G V100, total 75 nodes
-        "NC24rsv3-prod2": "run_on_aml/.azureml/OCRA.json",  # 4x 16G V100, total 53 nodes
+        "NC24rsv3-prod": "run_on_aml/.azureml/OCRA.json", # 4x 16G V100, total 74 nodes
+        "NC24rsv3-prod2": "run_on_aml/.azureml/OCRA.json", # 4x 16G V100, total 58 nodes
         # OCR2 targets
         # https://ml.azure.com/compute/list/training?wsid=/subscriptions/b8da985a-830d-4d20-b9e5-8d4c0d798c7f/resourceGroups/FY20Vision/workspaces/OCR2&tid=72f988bf-86f1-41af-91ab-2d7cd011db47
-        "ND40rsv2-drv": "run_on_aml/.azureml/OCR2.json",  # 8x 32G V100, total 8 nodes
-        "ND40rsv2": "run_on_aml/.azureml/OCR2.json",  # 8x 32G V100, total 11 nodes
-        "ND40rsv2-prod1": "run_on_aml/.azureml/OCR2.json",  # 8x 32G V100, total 4 nodes
-        "ND40rsv2-prod2": "run_on_aml/.azureml/OCR2.json",  # 8x 32G V100, total 4 nodes
-        "ND40rsv2-prod3": "run_on_aml/.azureml/OCR2.json",  # 8x 32G V100, total 4 nodes
+        "ND40rsv2": "run_on_aml/.azureml/OCR2.json", # 8x 32G V100, total 6 nodes
+        "ND40rsv2-prod1": "run_on_aml/.azureml/OCR2.json", # 8x 32G V100, total 6 nodes
+        "ND40rsv2-prod2": "run_on_aml/.azureml/OCR2.json", # 8x 32G V100, total 8 nodes
+        "ND40rsv2-prod3": "run_on_aml/.azureml/OCR2.json", # 8x 32G V100, total 8 nodes
+        # OCR-ITP targets
+        "f4sv2-8gb-wus2": "run_on_aml/.azureml/vision-itp-ocr-res-ws01-westus2.json", # CPU only target, total 8 nodes
     }
     k8s_workspace_dict = {
+        # k8s all targets list
+        # https://ml.azure.com/clusters?flight=itpmerge
         # OCR-ITP targets
-        "v100-32gb-wus2": "run_on_aml/.azureml/vision-itp-ocr-res-ws01-westus2.json",  # 8x 32G V100, quota 32 GPUs
-        "v100-8x-scus": "run_on_aml/.azureml/vision-itp-ocr-res-ws01-scus.json",  # 8x 32G V100, quota 32 GPUs
+        "v100-32gb-wus2": "run_on_aml/.azureml/vision-itp-ocr-res-ws01-westus2.json", # 8x 32G V100, quota 8 GPUs
+        "v100-8x-scus": "run_on_aml/.azureml/vision-itp-ocr-res-ws01-scus.json", # 8x 32G V100, quota 8 GPUs
         # researchvc targets
         # https://dev.azure.com/msresearch/GCR/_wiki/wikis/GCR.wiki/3438/AML-Kubernetes-(aka-AML-K8s)(aka-ITP)-Overview
-        "itpeastusv100cl": "run_on_aml/.azureml/resrchvc-eus.json",  # 8x 16G V100, quota 16 GPUs
-        "itpscusv100cl": "run_on_aml/.azureml/resrchvc-sc.json",  # 8x 16G V100, quota 16 GPUs
-        "itpseasiav100cl": "run_on_aml/.azureml/resrchvc-sea.json",  # 8x 16G V100, quota 16 GPUs
-        "itplabrr1cl1": "run_on_aml/.azureml/resrchvc.json",  # 8x 32G V100, quota 16 GPUs
-        "itpeusp100cl": "run_on_aml/.azureml/resrchvc-eus.json",  # 8x 32G V100, quota 16 GPUs
+        "itplabrr1cl1": "run_on_aml/.azureml/resrchvc.json", # 8x 32G V100 PCIe, quota 24 GPUs
+        "itpeusp100cl": "run_on_aml/.azureml/resrchvc-eus.json", # 4x 16G P100 PCIe, quota 32 GPUs
+        "itpeusp40cl": "run_on_aml/.azureml/resrchvc-eus.json", # 4x 24G P40 PCIe, quota 64 GPUs
+    }
+    sing_dict = {
+        # Singularity targets
+        # https://ml.azure.com/virtualClusters?flight=itpmerge
+        "msrresrchws": "run_on_aml/.azureml/msrresrchws.json",  # 16G V100 & 80G A100, quota unknow, maybe is 64 V100 (32 for ) and 24 A100
+        "msroctows": "run_on_aml/.azureml/msroctows.json",  # 16G V100, quota 64 GPUs
+        "scus-sing": "run_on_aml/.azureml/vision-itp-ocr-res-ws01-scus-sing.json", # 32G V100
     }
     if target in workspace_dict.keys():
         workspace_config = workspace_dict[target]
         isk8s_target = False
-    else:
+        is_singularity_target = False
+    elif target in k8s_workspace_dict.keys():
         workspace_config = k8s_workspace_dict[target]
         isk8s_target = True
-    ws = Workspace.from_config(workspace_config)
-    ct = ComputeTarget(workspace=ws, name=target)
-    return ws, ct, isk8s_target
+        is_singularity_target = False
+    else:
+        assert target in sing_dict.keys()
+        workspace_config = sing_dict[target]
+        isk8s_target = False
+        is_singularity_target = True
+    
+    cli_auth = AzureCliAuthentication()
+    ws = Workspace.from_config(workspace_config, auth=cli_auth)
+    # ws = Workspace.from_config(workspace_config)
 
+    if is_singularity_target:
+        ct = None
+    else:
+        ct = ComputeTarget(workspace=ws, name=target)
+    print("workspace: {}, target: {}".format(workspace_config, target))
+    return ws, ct, isk8s_target, is_singularity_target
 
 def azupload(src, dest, SAS):
     cmd = 'sudo azcopy copy "{}" "https://zhuzho.blob.core.windows.net/v-jiaweiwang/{}{}" '.format(
@@ -92,28 +118,64 @@ def check_config_and_upload_codes(args):
     azupload(zip_filepath, os.path.join(output_dir, zip_filename), args.SAS)
     return zip_filename, output_dir
 
-
 def main():
-    parser = argparse.ArgumentParser(description="AzureML Job Submission")
+    parser = argparse.ArgumentParser(description='AzureML Job Submission')
     # The following are AML job submission related arguments.
     parser.add_argument(
-        "--target", required=False, default="v100-32gb-wus2", help="which target"
+        '--target', 
+        required=False, 
+        default='v100-32gb-wus2',
+        help='which target'
     )
     parser.add_argument(
-        "--node_nums", required=False, default=1, type=int, help="num of nodes used"
+        '--node_nums', 
+        required=False, 
+        default=1, 
+        type=int,
+        help='num of nodes used'
+    )
+    parser.add_argument(
+        '--gpu_nums',   # only useful when use k8s targets and use 1 node
+        required=False, 
+        default=8, 
+        type=int,
+        help='num of gpus used'
     )
     parser.add_argument(
         "--config_file", required=False, type=str, help="config file for code"
     )
     parser.add_argument(
-        "--azureml_config_file",
-        required=False,
+        '--azureml_config_file', 
+        required=False, 
         type=str,
         help="azureml config file",
-        default="run_on_aml/v-kahu1.json",
+        default='v-kahu1.json',
     )
     parser.add_argument(
-        "--resume_path", help="resumed pth path on blob", type=str, required=False, default=''
+        '--preemption_allowed',  # only useful when use k8s targets
+        action="store_true",
+        help="preemption allowed",
+    )
+    parser.add_argument(
+        '--instance_type',   # only useful when use singularity
+        required=False, 
+        type=str,
+        help="singularity instance type",
+        default='ND40s_v2g1',
+    )
+    parser.add_argument(
+        '--sla_tier',   # only useful when use singularity
+        required=False, 
+        type=str,
+        help="singularity sla_tier",
+        default='Basic',
+    )
+    parser.add_argument(
+        '--singularity_image_version',   # only useful when use singularity
+        required=False, 
+        type=str,
+        help="singularity image_version",
+        default='pytorch-1.9.0-a100',
     )
     parser.add_argument(
         "--dataset_names",
@@ -138,16 +200,16 @@ def main():
     args, unparsed = parser.parse_known_args()
     with open(args.azureml_config_file, "r") as fp:
         data = json.load(fp)
-    args.datastore = data["datastore_name"]
-    args.exp_name = data["experiment_group_name"]
+    args.datastore = data['datastore_name']
+    args.exp_name = data['experiment_group_name']
     args.blob_output_root = data["blob_output_root"]
-    args.SAS = data["SAS"]
-    container_registry_address = data["container_registry_address"]
-    container_registry_username = data["container_registry_username"]
-    container_registry_password = data["container_registry_password"]
-    docker_image = data["docker_image"]
+    args.SAS = data['SAS']
+    container_registry_address = data['container_registry_address']
+    container_registry_username = data['container_registry_username']
+    container_registry_password = data['container_registry_password']
+    docker_image = data['docker_image']
     unparsed = " ".join(unparsed)
-    ws, ct, isk8s = get_ws_ct(args.target)
+    ws, ct, isk8s, is_singularity_target = get_ws_ct(args.target)
     ds = Datastore(workspace=ws, name=args.datastore)
     ds_ref = ds.path("./").as_mount()
     if args.sleep_for_debug > 0:
@@ -160,7 +222,7 @@ def main():
         ]
     else:
         if "ND40rsv2" in args.target:
-            entry_script = "run_on_aml.py" #"run_on_aml_ocr2.py"
+            entry_script = "run_on_aml_ocr2.py"
         else:
             entry_script = "run_on_aml.py"
         zip_filename, output_path = check_config_and_upload_codes(args,)
@@ -179,8 +241,6 @@ def main():
                 output_path,
                 "--working_dir",
                 args.experiment_name,
-                "--resume_path",
-                args.resume_path
             ]
         else:
             script_params = [
@@ -196,11 +256,8 @@ def main():
                 output_path,
                 "--working_dir",
                 args.experiment_name,
-                "--resume_path",
-                args.resume_path
             ]
         if unparsed != "":
-
             script_params["--unparsed"] = unparsed
     env_name = args.experiment_name
     est = ScriptRunConfig(
@@ -229,14 +286,37 @@ def main():
     if isk8s:
         itpconfig = K8sComputeConfiguration()
         itp = dict()
-        itp["job_priority"] = 200
-        itp["preemption_allowed"] = False
+        itp['gpu_count'] = args.gpu_nums
+        itp['job_priority'] = 200
+        itp['preemption_allowed'] = args.preemption_allowed
         itpconfig.configuration = itp
         est.run_config.cmk8scompute = itpconfig
-    tags = {"id": args.config_file}
+
+    if is_singularity_target:
+        if args.target == 'msrresrchws':
+            virtual_cluster_arm_id = "/subscriptions/22da88f6-1210-4de2-a5a3-da4c7c2a1213/resourceGroups/gcr-singularity-resrch/providers/Microsoft.MachineLearningServices/virtualclusters/msrresrchvc"
+        elif args.target == 'msroctows':
+            virtual_cluster_arm_id = "/subscriptions/d4404794-ab5b-48de-b7c7-ec1fefb0a04e/resourceGroups/gcr-singularity-octo/providers/Microsoft.MachineLearningServices/virtualclusters/msroctovc"
+        elif args.target == 'scus-sing':
+            virtual_cluster_arm_id = "/subscriptions/48b6cd5e-3ffe-4c2e-9e99-5760a42cd093/resourceGroups/vision-sing-ocr/providers/Microsoft.MachineLearningServices/workspaces/vision-sing-ocr-res-ws01-scus"
+        est.run_config.target = "aisupercomputer"
+        est.run_config.aisupercomputer = AISuperComputerConfiguration()
+        est.run_config.aisupercomputer.instance_type = args.instance_type
+        est.run_config.aisupercomputer.sla_tier = args.sla_tier
+        est.run_config.aisupercomputer.image_version = args.singularity_image_version
+        est.run_config.node_count = args.node_nums
+        est.run_config.aisupercomputer.priority = "High"
+        est.run_config.aisupercomputer.scale_policy.auto_scale_interval_in_sec = 36000
+        est.run_config.aisupercomputer.scale_policy.max_instance_type_count = args.node_nums
+        est.run_config.aisupercomputer.scale_policy.min_instance_type_count = args.node_nums
+        est.run_config.environment.environment_variables['OMPI_COMM_WORLD_SIZE'] = str(args.node_nums)
+        est.run_config.aisupercomputer.virtual_cluster_arm_id = virtual_cluster_arm_id
+
+    tags = {'id': args.config_file}
 
     run = Experiment(workspace=ws, name=args.exp_name).submit(est, tags=tags)
-    print(run.get_portal_url())
+    print("URL: ", run.get_portal_url())
+    print("Success!")
 
 
 if __name__ == "__main__":

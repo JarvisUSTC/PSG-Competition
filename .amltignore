@@ -8,10 +8,6 @@ submission*.zip
 # run_on_aml/
 zip_codebase/
 checkpoints/
-configs/deformable_lgdformer_v2/debug_config.py
-.history/
-amlt/
-*.zip
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
