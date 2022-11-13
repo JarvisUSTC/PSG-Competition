@@ -39,6 +39,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
                  num_relations,
                  object_classes,
                  predicate_classes,
+                 use_s_o_proj=False,
                  num_feature_levels=4,
                  num_things_classes=200,
                  num_obj_query=100,
@@ -266,6 +267,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         else:
             self.rel_cls_out_channels = num_relations + 1
 
+        self.use_s_o_proj = use_s_o_proj
         self.positional_encoding = build_positional_encoding(
             positional_encoding)
         # rel decoder
@@ -306,6 +308,12 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         self.obj_query_update = nn.Sequential(
             Linear(self.embed_dims, self.embed_dims), nn.ReLU(inplace=True),
             Linear(self.embed_dims, self.embed_dims))
+
+        if self.use_s_o_proj:
+            import copy
+            self.predicate_node_generator.s_entity_proj = copy.deepcopy(self.sub_query_update)
+            self.predicate_node_generator.o_entity_proj = copy.deepcopy(self.obj_query_update)
+
 
         # self.sop_query_update = nn.Sequential(
         #     Linear(2 * self.embed_dims, self.embed_dims),
@@ -543,8 +551,14 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         outs_rel_dec_ent_aware_sub = ext_inter_feats[0].feature
         outs_rel_dec_ent_aware_obj = ext_inter_feats[1].feature
         ### interaction
-        updated_sub_embed = self.sub_query_update(outs_obj_dec)
-        updated_obj_embed = self.obj_query_update(outs_obj_dec)
+        if self.use_s_o_proj:
+            updated_sub_embed = self.predicate_node_generator.s_entity_proj(outs_obj_dec)
+            updated_obj_embed = self.predicate_node_generator.o_entity_proj(outs_obj_dec)
+            updated_sub_embed = self.sub_query_update(updated_sub_embed)
+            updated_obj_embed = self.obj_query_update(updated_obj_embed)
+        else:
+            updated_sub_embed = self.sub_query_update(outs_obj_dec)
+            updated_obj_embed = self.obj_query_update(outs_obj_dec)
         sub_q_normalized = F.normalize(updated_sub_embed[-1],
                                        p=2,
                                        dim=-1,

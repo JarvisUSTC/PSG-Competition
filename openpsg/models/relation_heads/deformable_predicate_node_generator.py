@@ -178,6 +178,9 @@ class Deformable_Predicate_Node_Generator(BaseModule):
             self.pos_trans_4d = nn.Linear(self.embed_dims * 2, self.embed_dims)
             self.pos_trans_norm_4d = nn.LayerNorm(self.embed_dims)
 
+        self.s_entity_proj = None # ~ this is a hack
+        self.o_entity_proj = None # ~ this is a hack
+
     def forward(
         self,
         src,
@@ -560,8 +563,8 @@ class Deformable_Predicate_Node_Generator(BaseModule):
 
                 ent_sub_output_dict = ent_dec_layer_sub(
                     ent_sub_output_dict_enh,
-                    ent_hs_input,
-                    ent_hs_input,
+                    self.s_entity_proj(ent_hs_input) if self.s_entity_proj else ent_hs_input,
+                    self.s_entity_proj(ent_hs_input) if self.s_entity_proj else ent_hs_input,
                     key_padding_mask=ent_hs_masks,
                     key_pos=None,
                     query_pos=query_pos_embed_sub,
@@ -569,8 +572,8 @@ class Deformable_Predicate_Node_Generator(BaseModule):
 
                 ent_obj_output_dict = ent_dec_layer_obj(
                     ent_obj_output_dict_enh,
-                    ent_hs_input,
-                    ent_hs_input,
+                    self.o_entity_proj(ent_hs_input) if self.o_entity_proj else ent_hs_input,
+                    self.o_entity_proj(ent_hs_input) if self.o_entity_proj else ent_hs_input,
                     key_padding_mask=ent_hs_masks,
                     key_pos=None,
                     query_pos=query_pos_embed_obj,
@@ -599,8 +602,8 @@ class Deformable_Predicate_Node_Generator(BaseModule):
 
                 ent_sub_output_dict = ent_dec_layer_sub(
                     ent_sub_tgt,
-                    ent_hs_input,
-                    ent_hs_input,
+                    self.s_entity_proj(ent_hs_input) if self.s_entity_proj else ent_hs_input,
+                    self.s_entity_proj(ent_hs_input) if self.s_entity_proj else ent_hs_input,
                     key_padding_mask=ent_hs_masks,
                     key_pos=None,
                     query_pos=query_pos_embed_sub,
@@ -608,8 +611,8 @@ class Deformable_Predicate_Node_Generator(BaseModule):
 
                 ent_obj_output_dict = ent_dec_layer_obj(
                     ent_obj_tgt,
-                    ent_hs_input,
-                    ent_hs_input,
+                    self.o_entity_proj(ent_hs_input) if self.o_entity_proj else ent_hs_input,
+                    self.o_entity_proj(ent_hs_input) if self.o_entity_proj else ent_hs_input,
                     key_padding_mask=ent_hs_masks,
                     key_pos=None,
                     query_pos=query_pos_embed_obj,
