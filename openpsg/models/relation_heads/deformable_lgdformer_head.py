@@ -591,7 +591,7 @@ class DeformableLGDFormerHead(AnchorFreeHead):
         obj_outputs_class_aux = self.obj_cls_embed(outs_rel_dec_ent_aware_obj)
         obj_outputs_coord_aux = self.obj_box_embed(outs_rel_dec_ent_aware_obj).sigmoid()
         rel_sub_obj_outputs_union_box_aux = []
-        for layer_idx in range(self.predicate_node_generator.num_decoder_layer):
+        for layer_idx in range(len(outs_rel_dec)):
             rel_sub_obj_outputs_union_box_aux.append(self.predicate_node_generator.rel_reference_points[layer_idx](outs_rel_dec[layer_idx]).sigmoid())
         rel_sub_obj_outputs_union_box_aux = torch.stack(rel_sub_obj_outputs_union_box_aux, 0)
         if self.use_mask:

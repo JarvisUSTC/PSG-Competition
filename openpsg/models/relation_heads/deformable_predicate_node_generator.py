@@ -75,6 +75,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
         update_query_by_rel_hs=False,
         no_coords_prior = False,
         two_stage = False,
+        supervision_for_init = False,
         init_cfg = None,
     ):
         super(Deformable_Predicate_Node_Generator, self).__init__(init_cfg=init_cfg)
@@ -164,8 +165,11 @@ class Deformable_Predicate_Node_Generator(BaseModule):
             self.intra_self_attention = None
 
         self.rel_sub_obj_box_embed = Linear(self.embed_dims, 4) # Predict the union box
-        self.rel_reference_points = _get_clones(self.rel_sub_obj_box_embed, self.num_decoder_layer)
-        self.rel_reference_points_proposal = Linear(self.embed_dims, 2)
+        if supervision_for_init:
+            self.rel_reference_points = _get_clones(self.rel_sub_obj_box_embed, self.num_decoder_layer+1)
+        else:
+            self.rel_reference_points = _get_clones(self.rel_sub_obj_box_embed, self.num_decoder_layer)
+            self.rel_reference_points_proposal = Linear(self.embed_dims, 2)
         del self.rel_sub_obj_box_embed
 
         self.two_stage = two_stage
@@ -177,7 +181,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
             # For 4D ref boxes
             self.pos_trans_4d = nn.Linear(self.embed_dims * 2, self.embed_dims)
             self.pos_trans_norm_4d = nn.LayerNorm(self.embed_dims)
-
+        self.supervision_for_init = supervision_for_init
         self.s_entity_proj = None # ~ this is a hack
         self.o_entity_proj = None # ~ this is a hack
 
@@ -230,9 +234,14 @@ class Deformable_Predicate_Node_Generator(BaseModule):
 
         (rel_tgt, ent_obj_tgt, ent_sub_tgt) = self.reset_tgt()
 
-        rel_feat_all = []
-        ent_aware_rel_hs_sub = []
-        ent_aware_rel_hs_obj = []
+        if self.supervision_for_init:
+            rel_feat_all = [rel_tgt]
+            ent_aware_rel_hs_sub = [ent_sub_tgt]
+            ent_aware_rel_hs_obj = [ent_obj_tgt]
+        else:
+            rel_feat_all = []
+            ent_aware_rel_hs_sub = []
+            ent_aware_rel_hs_obj = []
         reference_points_output = [] # for debug
 
         # outputs placeholder & container
@@ -270,7 +279,7 @@ class Deformable_Predicate_Node_Generator(BaseModule):
                 # spatial_shapes, level_start_index, valid_ratios: from mask deformable detr head
                 # reg_branches: None
 
-                if idx == 0:
+                if idx == 0 and not self.supervision_for_init:
                     rel_reference_points = self.rel_reference_points_proposal(rel_tgt).sigmoid().permute(1,0,2).contiguous()
                 # Predict the union box of object and subject
                 elif self.rel_reference_points is not None:
